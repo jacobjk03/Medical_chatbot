@@ -19,10 +19,6 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-        with:
-          repository: jacobjk03/Monument_Prediction
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ref: main
 
       - name: Lint code
         run: echo "Linting repository"
