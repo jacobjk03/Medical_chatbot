@@ -16,7 +16,7 @@
 	<body>
 		<div class="container-fluid h-100">
 			<div class="row justify-content-center h-100">		
-				<div class="col-md-8 col-xl-6 chat">
+				<div class="col-12 chat">
 					<div class="card">
 						<div class="card-header msg_head">
 							<div class="d-flex bd-highlight">
@@ -61,16 +61,41 @@
 					
 					$("#text").val("");
 					$("#messageFormeight").append(userHtml);
+					$("#messageFormeight").scrollTop($("#messageFormeight")[0].scrollHeight); // Auto-scroll
 
+					// 🔹 Add typing indicator before sending request
+					var typingHtml = `
+					    <div id="typing" class="d-flex justify-content-start mb-4">
+					        <div class="img_cont_msg">
+					            <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png"
+					                 class="rounded-circle user_img_msg">
+					        </div>
+					        <div class="typing-indicator">
+					            <span></span><span></span><span></span>
+					        </div>
+					    </div>
+					`;
+
+					$("#messageFormeight").append(typingHtml);
+					$("#messageFormeight").scrollTop($("#messageFormeight")[0].scrollHeight);
+					
 					$.ajax({
-						data: {
-							msg: rawText,	
-						},
-						type: "POST",
-						url: "/get",
+					    data: {
+					        msg: rawText,	
+					    },
+					    type: "POST",
+					    url: "/get",
 					}).done(function(data) {
-						var botHtml = '<div class="d-flex justify-content-start mb-4"><div class="img_cont_msg"><img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" class="rounded-circle user_img_msg"></div><div class="msg_cotainer">' + data + '<span class="msg_time">' + str_time + '</span></div></div>';
-						$("#messageFormeight").append($.parseHTML(botHtml));
+					    // 🔹 Remove typing indicator
+					    $("#typing").remove();
+					
+					    // 🔹 Add bot reply
+					    var botHtml = '<div class="d-flex justify-content-start mb-4">' +
+					        '<div class="img_cont_msg"><img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" class="rounded-circle user_img_msg"></div>' +
+					        '<div class="msg_cotainer">' + data + '<span class="msg_time">' + str_time + '</span></div>' +
+					        '</div>';
+					    $("#messageFormeight").append($.parseHTML(botHtml));
+					    $("#messageFormeight").scrollTop($("#messageFormeight")[0].scrollHeight); // Auto-scroll
 					});
 					event.preventDefault();
 				});
