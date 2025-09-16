@@ -32,16 +32,21 @@ PINECONE_API_KEY = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
 
-### Download the quantize model from the link provided in model folder & keep the model in the model directory:
+### Install and run Llama 3 with Ollama
 
 ```ini
-## Download the Llama 2 Model:
+## Install Ollama from here
+https://ollama.com/download
 
-llama-2-7b-chat.ggmlv3.q4_0.bin
+## Pull the Llama 3 model:
+ollama pull llama3
 
+## Start the Ollama server:
+ollama serve
 
-## From the following link:
-https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGML/tree/main
+## (Optional) Test the model:
+ollama run llama3
+
 ```
 
 ```bash
@@ -65,7 +70,8 @@ open up localhost:
 - Python
 - LangChain
 - Flask
-- Meta Llama2
+- Meta Llama3 (Via Ollama)
 - Pinecone
+- Agentic AI Pipeline (classification, reranking, safety nodes)
 
 
