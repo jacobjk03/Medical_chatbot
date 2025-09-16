@@ -10,26 +10,27 @@ body,html{
 	margin-top: auto;
 	margin-bottom: auto;
 }
-.card{
-	height: 500px;
-	border-radius: 15px !important;
-	background-color: rgba(0,0,0,0.4) !important;
+.card {
+    height: 100vh;          /* full screen height */
+    width: 100%;            /* avoid horizontal overflow from 100vw */
+    border-radius: 0 !important;
+    background-color: rgba(0,0,0,0.4) !important;
+    display: flex;
+    flex-direction: column;
 }
 .contacts_body{
 	padding:  0.75rem 0 !important;
 	overflow-y: auto;
 	white-space: nowrap;
 }
-.msg_card_body{
-	overflow-y: auto;
+.msg_card_body {
+    flex: 1;              /* take remaining height */
+    overflow-y: auto;     /* scroll when messages overflow */
+    padding: 10px;
 }
-.card-header{
-	border-radius: 15px 15px 0 0 !important;
-	border-bottom: 0 !important;
-}
-.card-footer{
-border-radius: 0 0 15px 15px !important;
-	border-top: 0 !important;
+.card-header, .card-footer {
+    flex-shrink: 0;
+    background: rgba(0,0,0,0.6);
 }
 .container{
 	align-content: center;
@@ -145,24 +146,27 @@ border-radius: 0 0 15px 15px !important;
 	cursor: pointer;
 	margin-right: 20px;
 }
-.msg_cotainer{
-	margin-top: auto;
-	margin-bottom: auto;
-	margin-left: 10px;
-	border-radius: 25px;
-	background-color: rgb(82, 172, 255);
-	padding: 10px;
-	position: relative;
+.msg_cotainer,
+.msg_cotainer_send {
+	color: #fff;           /* make text white */
+    max-width: 70%;        /* don’t let bubbles stretch full width */
+    word-wrap: break-word; /* wrap long words/links */
+    line-height: 1.4;      /* better readability */
+    font-size: 15px;
+    margin-top: 5px;       /* add vertical spacing */
+    margin-bottom: 5px;
+	white-space: pre-line;   /* ⬅ This makes \n render as actual line breaks */
 }
-.msg_cotainer_send{
-	margin-top: auto;
-	margin-bottom: auto;
-	margin-right: 10px;
-	border-radius: 25px;
-	background-color: #58cc71;
-	padding: 10px;
-	position: relative;
+.msg_cotainer {
+    margin-left: 10px;   /* space from avatar */
+    margin-right: auto;  /* push left */
 }
+
+.msg_cotainer_send {
+    margin-right: 10px;  /* space from avatar */
+    margin-left: auto;   /* push right */
+}
+
 .msg_time{
 	position: absolute;
 	left: 0;
@@ -215,6 +219,37 @@ border-radius: 0 0 15px 15px !important;
 .action_menu ul li:hover{
 	cursor: pointer;
 	background-color: rgba(0,0,0,0.2);
+}
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    background: rgb(82, 172, 255);  /* same as bot bubble */
+    border-radius: 25px;
+    padding: 8px 15px;
+    margin-left: 10px;
+    margin-top: auto;
+    margin-bottom: auto;
+}
+
+.typing-indicator span {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin: 0 2px;
+    background: #fff;
+    border-radius: 50%;
+    opacity: 0.4;
+    animation: blink 1.4s infinite both;
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: 0s; }
+.typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes blink {
+    0% { opacity: 0.2; }
+    20% { opacity: 1; }
+    100% { opacity: 0.2; }
 }
 @media(max-width: 576px){
 	.contacts_card{
