@@ -30,5 +30,9 @@ pinecone-client==5.0.1
 sentence-transformers==3.0.1
 ctransformers==0.2.27  
 
+# Metrics
+rouge-score
+bert-score
+
 # Local dev install
 -e .
