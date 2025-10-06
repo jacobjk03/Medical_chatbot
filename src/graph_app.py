@@ -6,12 +6,14 @@ from langchain_core.documents import Document
 from langchain_community.tools import DuckDuckGoSearchResults
 from ddgs import DDGS
 from src.helper import download_hugging_face_embeddings
-from src.prompt import prompt_template, chitchat_prompt
+from src.prompt import prompt_template, classify_prompt, chitchat_prompt, safety_prompt, polish_prompt
 from langchain_community.chat_models import ChatOllama
+from langchain_community.llms import CTransformers
 from sentence_transformers import CrossEncoder
 from dotenv import load_dotenv
 import requests
 import os, re
+import json
 
 load_dotenv()
 
@@ -47,42 +49,46 @@ class RAGState(TypedDict):
     did_web: bool
 
 
-# ---- LLM (via Ollama) ----
-llm = ChatOllama(
-    model="llama3",   # pulled with `ollama pull`
-    temperature=0.2,
-    num_predict=512
-)
-
 # ---- Nodes ----
-import re
-
 def classify(state: RAGState) -> RAGState:
-    q = state["question"].lower().strip()
+    q = state["question"].strip()
 
-    # Detect chit-chat by phrases
-    chit_phrases = [
-        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
-        "how are you", "who are you", "thank you", "thanks"
-    ]
-    if any(phrase in q for phrase in chit_phrases):
+    classify_llm = ChatOllama(
+        model="alibayram/medgemma:4b",   # or :27b if resources allow
+        temperature=0.0,                 # deterministic classification
+        max_tokens=32
+    )
+
+    # Fill prompt
+    prompt = classify_prompt.format(q=q)
+
+    # Invoke LLM
+    response = classify_llm.invoke(prompt)
+    result = response.content.strip().lower()
+    print("Raw MedGemma Output:", result)
+
+    # sanitize to valid labels
+    if "chitchat" in result:
         state["route"] = "chitchat"
-        return state
-
-    # Definition-type questions
-    if any(k in q for k in ["what is", "define", "definition", "meaning"]):
+    elif "definition" in result:
         state["route"] = "definition"
-    else:
-        # Everything else is general
+    elif "general" in result:
         state["route"] = "general"
+    else:
+        state["route"] = "general"  # safe fallback
 
-    print(f">>> Classified as {state['route']}")
+    print(f">>> MedGemma classified as {state['route']}")
     return state
 
 
 
 def chitchat(state: RAGState) -> RAGState:
     prompt = chitchat_prompt.format(question=state["question"])
+    llm = ChatOllama(
+        model="llama3", 
+        temperature=0.2,
+        num_predict=512
+    )
     out = llm.invoke(prompt)
 
     if hasattr(out, "content"):
@@ -119,25 +125,35 @@ def rerank_node(state: RAGState) -> RAGState:
     pine_docs = [(d, s) for d, s in ranked if d.metadata.get("source") != "web"]
     web_docs  = [(d, s) for d, s in ranked if d.metadata.get("source") == "web"]
 
-    # Take top-2 Pinecone + top-2 Web (if available)
-    top_pine = [d for d, _ in pine_docs[:2]]
-    top_web  = [d for d, _ in web_docs[:2]]
+    # Handle first run → Pinecone only
+    if not state.get("did_web", False) or not web_docs:
+        top_docs = [d for d, _ in pine_docs[:4]]   # only Pinecone docs
+        print(">>> First run (no web docs) → using Pinecone only")
+    else:
+        # Otherwise: compare Pinecone vs Web
+        pine_scores = [s for d, s in pine_docs]
+        web_scores  = [s for d, s in web_docs]
 
-    # Merge sets (prioritize balance)
-    top_docs = top_pine + top_web
+        state["best_score_pine"] = max(pine_scores) if pine_scores else 0.0
+        state["best_score_web"]  = max(web_scores) if web_scores else 0.0
+        state["best_score"]      = max(state["best_score_pine"], state["best_score_web"])
 
-    # Fallback: fill up to 4 with highest remaining docs
-    if len(top_docs) < 4:
-        extra = [d for d, _ in ranked if d not in top_docs]
-        top_docs.extend(extra[: 4 - len(top_docs)])
+        if state["best_score_web"] > state["best_score_pine"]:
+            print(">>> Web score higher → selecting web docs only")
+            top_docs = [d for d, _ in web_docs[:4]]
+        else:
+            print(">>> Pinecone stronger → mixing Pinecone + Web")
+            top_docs = [d for d, _ in pine_docs[:2]] + [d for d, _ in web_docs[:2]]
 
-    # Ensure at least 1 doc survives
-    state["contexts"] = top_docs or [state["contexts"][0]]
+    # Fallback: ensure at least 1 doc
+    if not top_docs:
+        top_docs = [state["contexts"][0]]
 
-    # Compute scores separately
-    pine_scores = [s for d, s in ranked if d in top_pine]
-    web_scores  = [s for d, s in ranked if d in top_web]
+    state["contexts"] = top_docs
 
+    # Always recompute best scores for debug
+    pine_scores = [s for d, s in ranked if d in state["contexts"] and d.metadata.get("source") != "web"]
+    web_scores  = [s for d, s in ranked if d in state["contexts"] and d.metadata.get("source") == "web"]
     state["best_score_pine"] = max(pine_scores) if pine_scores else 0.0
     state["best_score_web"]  = max(web_scores) if web_scores else 0.0
     state["best_score"]      = max(state["best_score_pine"], state["best_score_web"])
@@ -150,17 +166,25 @@ def rerank_node(state: RAGState) -> RAGState:
     return state
 
 
+
 def response(state: RAGState) -> RAGState:
     ctx = "\n\n".join([d.page_content for d in state["contexts"]])
     history_text = "\n".join(state.get("history", []))
 
-    out = llm.invoke(PROMPT.format(
+    # Step 1: MedGemma generates draft (grounded, factual)
+    medgemma = ChatOllama(model="alibayram/medgemma:4b", temperature=0.2, max_tokens=512)
+    draft_out = medgemma.invoke(PROMPT.format(
         history=history_text,
         question=state["question"],
         context=ctx
     ))
-    text = out.content if hasattr(out, "content") else str(out)
-    text = text.strip()
+    draft = draft_out.content.strip() if hasattr(draft_out, "content") else str(draft_out).strip()
+
+    # Step 2: LLaMA 3 polishes for user-facing style
+    llama3 = ChatOllama(model="llama3", temperature=0.5, max_tokens=512)
+    
+    polish_out = llama3.invoke(polish_prompt.format(draft=draft))
+    text = polish_out.content.strip() if hasattr(polish_out, "content") else str(polish_out).strip()
 
     # Collect refs
     web_refs, book_refs = [], []
@@ -175,8 +199,7 @@ def response(state: RAGState) -> RAGState:
                 web_refs.append("🌐 Web Search Result")
         elif "Gale Encyclopedia" in source or source == "book":
             page = d.metadata.get("page", "?")
-            para = d.metadata.get("paragraph", "?")
-            book_refs.append(f"📖 Gale Encyclopedia (page {page}, paragraph {para})")
+            book_refs.append(f"📖 Gale Encyclopedia (page {page})")
 
     # ✅ Choose what to display
     if state.get("did_web", False) and web_refs:
@@ -197,21 +220,45 @@ def response(state: RAGState) -> RAGState:
     state["draft"] = final_answer
     return state
 
+## Not a node: a simple function for Grade node to check safet
+
+
 def grade(state: RAGState) -> RAGState:
     text = state.get("draft") or ""
     has_refs = "References:" in text or "📖" in text or "🌐" in text
-    grounded = 0.9 if has_refs else 0.5
+    grounded = 0.9 if has_refs else 0.5  
 
-    # simple safety screen
-    unsafe = re.search(r"\b(diagnose|guaranteed cure|definitive)\b", text.lower())
-    safety = 0.9 if not unsafe else 0.3
+    def safety_check(text: str) -> float:
+        safety_llm = ChatOllama(
+            model="alibayram/medgemma:4b",   # domain-tuned medical model
+            temperature=0.0,                 # deterministic
+            max_tokens=16                    # very short output
+        )
+
+        prompt = safety_prompt.format(q=state["question"],text=text)
+        out = safety_llm.invoke(prompt)
+        raw = out.content if hasattr(out, "content") else str(out)
+        print("Raw MedGemma Safety Output:", raw)
+
+        if "UNSAFE" in raw:
+            print("Unsafe !")
+            return 0.3
+        elif "SAFE" in raw:
+            print("Safe !")
+            return 0.9
+        else:
+            # fallback if it doesn’t follow format
+            print("Safe")
+            return 0.9   
 
     # debug
     print(">>> Grading: has_refs=", has_refs, "grounded=", grounded)
 
+    safety_score = safety_check(text)
     state["grounded_score"] = grounded
-    state["safety_score"] = safety
+    state["safety_score"] = safety_score   # keep float
     return state
+
 
 def refine_or_finish(state: RAGState) -> RAGState:
     g = state.get("grounded_score", 0.0)
@@ -238,7 +285,7 @@ def web_search_tool(state: RAGState) -> RAGState:
     query = state["question"]
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+            results = list(ddgs.text(query, max_results=6))
         if results:
             # Append web results (keep Pinecone + Web together)
             new_web_docs = [
@@ -250,7 +297,7 @@ def web_search_tool(state: RAGState) -> RAGState:
                         "title": r.get("title", "Web Result"),
                     },
                 )
-                for r in results[:3]
+                for r in results[:4]
             ]
             state["contexts"].extend(new_web_docs)
         else:
@@ -333,7 +380,7 @@ def loop_or_end(state: RAGState):
     
     # If definition → never go to web
     if route == "definition":
-        if tries == 1 and state.get("best_score_pine", 0.0) < 0.5 and grounded < 0.8:
+        if tries == 1 and state.get("best_score_pine", 0.0) < 0.4 and grounded < 0.8:
             print(">>> Definition route → retrying Pinecone only")
             return "retrieve"
         print(">>> Definition route → stopping (no web search allowed)")
@@ -354,9 +401,6 @@ def loop_or_end(state: RAGState):
     return END
 
 
-
-
 graph.add_conditional_edges("refine_or_finish", loop_or_end)
-
 agentic_rag = graph.compile()
 

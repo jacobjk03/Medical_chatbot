@@ -5,6 +5,7 @@ from langchain.prompts import PromptTemplate
 from langchain_community.llms import CTransformers
 from langchain.chains import RetrievalQA
 from dotenv import load_dotenv
+from langchain_community.chat_models import ChatOllama
 from src.graph_app import agentic_rag
 from src.prompt import *
 import os
@@ -56,13 +57,31 @@ app.has_reset = False
 #     print("Response : ", result["result"])
 #     return str(result["result"])
 
+def summarize_history(full_history, llm, max_turns=10):
+    """Summarize older history if too long, keep last N turns intact."""
+    if len(full_history) <= max_turns * 2:  # 2 entries per turn (User + Bot)
+        return "\n".join(full_history), None  # return as plain string
 
-@app.before_request
-def clear_session_once():
-    if not app.has_reset:
-        session.clear()
-        app.has_reset = True
-        print(">>> Session history cleared on app startup")
+    # Split into old and recent parts
+    old_part = "\n".join(full_history[:-max_turns*2])
+    recent_part = "\n".join(full_history[-max_turns*2:])
+
+    # Summarize old part
+    prompt = f"""
+    Summarize the following conversation history in a concise way,
+    keeping key user questions and assistant responses:
+
+    {old_part}
+
+    Return a short summary that preserves medical context.
+    """
+    summary_out = llm.invoke(prompt)
+    summary = summary_out.content if hasattr(summary_out, "content") else str(summary_out)
+
+    # Build final summarized history string
+    summarized_history = f"Summary so far: {summary}\n\nRecent conversation:\n{recent_part}"
+    return summarized_history, summary
+
 
 @app.route("/")
 def index():
@@ -72,13 +91,22 @@ def index():
 def chat():
     question = request.form["msg"].strip()
 
-    # 🧹 Reset history if user sends "reset"
     if question.lower() == "reset":
         session["history"] = []
         return "🧹 History cleared. Let's start fresh!"
 
-    # Get history if it exists, else empty list
+    # Retrieve full history
     history = session.get("history", [])
+
+    # 🔑 Use LLaMA-3 via Ollama for summarization
+    llm_for_history = ChatOllama(
+        model="llama3:8b",      # or llama3:70b if you’ve got GPU/VRAM
+        temperature=0.3,
+        max_tokens=256
+    )
+
+    # 🔑 Summarize if long
+    summarized_history, summary = summarize_history(history, llm_for_history)
 
     state = {
         "question": question,
@@ -89,19 +117,20 @@ def chat():
         "grounded_score": 0.0,
         "safety_score": 0.0,
         "tries": 0,
-        "history": history[-4:],  # keep last 4 turns
-        "did_web": False, 
+        "history": summarized_history,  # send to agent
+        "did_web": False,
     }
 
     result = agentic_rag.invoke(state)
     answer = result.get("draft") or "Sorry, I couldn’t find a safe, grounded answer."
 
-    # Save this turn into session history
+    # Save turn
     history.append(f"User: {question}")
     history.append(f"Bot: {answer}")
-    session["history"] = history  # save back into session
+    session["history"] = history  
 
     return answer
+
 
 
 if __name__ == '__main__':

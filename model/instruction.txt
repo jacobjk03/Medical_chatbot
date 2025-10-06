@@ -1,16 +1,19 @@
+## 1. RAG pipeline
 ## Download the Llama 2 Model:
-
 llama-2-7b-chat.ggmlv3.q4_0.bin
-
-
 
 ## From the following link:
 https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGML/tree/main
 
-## For Agentic AI (Model Update) if want to use ctransformer as RAG
-https://huggingface.co/joshnader/Meta-Llama-3.1-8B-Instruct-Q4_K_M-GGUF 
+## 2. Agentic AI Pipeline 
+##For Agentic AI (Model Update) 
 
-But for Agentic AI we used Llama for Llama 3.1
-Install llama and then run: ollama pull llama3
-
+Agentic AI we used Llama 3.1
+Install ollama: https://ollama.com/
 Then run "ollama serve" to start Ollama Service Ollama 
+
+## For response, safety check and classification of query- > download:
+https://ollama.com/alibayram/medgemma -> just run ollama pull alibayram/medgemma:4b
+and then run: ollama pull llama3 (For Summary and user-facing style response)
+
+Do either step 1 or 2. Note: If you want to use only RAG pipeline uncomment the code in app.py and comment the agentic pipeline code.
