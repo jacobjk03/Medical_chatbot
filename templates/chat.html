@@ -18,7 +18,7 @@
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     
     <!-- Custom CSS -->
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css')}}"/>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}?v=4"/>
 </head>
 
 <body>
@@ -28,11 +28,12 @@
                 <div class="card">
                     <!-- Header -->
                     <div class="card-header msg_head">
-                        <div class="d-flex bd-highlight justify-content-between align-items-center">
-                            <div class="d-flex bd-highlight">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <!-- Left side: Avatar and Info -->
+                            <div class="d-flex align-items-center">
                                 <div class="img_cont">
                                     <img src="https://p.turbosquid.com/ts-thumb/ui/yFoz1G/9DV3tqoL/posed/png/1519983872/300x300/sharp_fit_q85/9ffb0b50c120e20b9e3a0877681ed9273e287fe8/posed.jpg" 
-                                         class="rounded-circle user_img">
+                                        class="rounded-circle user_img">
                                     <span class="online_icon"></span>
                                 </div>
                                 <div class="user_info">
@@ -40,11 +41,17 @@
                                     <p>Powered by ReAct Architecture</p>
                                 </div>
                             </div>
-                            
-                            <!-- Reasoning Toggle Button -->
-                            <div class="reasoning-toggle-container">
-                                <button id="reasoningToggle" class="btn btn-sm reasoning-toggle-btn" title="Toggle reasoning visibility">
-                                    <i class="fas fa-brain"></i>
+
+                            <!-- Right side: Buttons -->
+                            <div class="d-flex align-items-center" style="gap: 10px;">
+                                <button onclick="sendCommand('help')" class="btn btn-sm btn-outline-light header-btn" title="Show help">
+                                    <i class="fas fa-question-circle"></i> <span>Help</span>
+                                </button>
+                                <button onclick="sendCommand('reset')" class="btn btn-sm btn-outline-light header-btn" title="Clear history">
+                                    <i class="fas fa-redo"></i> <span>Reset</span>
+                                </button>
+                                <button class="reasoning-toggle-btn" id="reasoningToggle" onclick="toggleReasoning()">
+                                    <i class="fas fa-brain"></i> 
                                     <span id="reasoningStatus">Reasoning ON</span>
                                 </button>
                             </div>
@@ -102,11 +109,13 @@
                 if (reasoningEnabled) {
                     $("#reasoningStatus").text("Reasoning ON");
                     $(this).removeClass("btn-secondary").addClass("btn-primary");
-                    $(".reasoning-section").slideDown();
+                    $(".reasoning-section").removeClass("hidden");
+                    $(".msg_cotainer").removeClass("reasoning-hidden");
                 } else {
                     $("#reasoningStatus").text("Reasoning OFF");
                     $(this).removeClass("btn-primary").addClass("btn-secondary");
-                    $(".reasoning-section").slideUp();
+                    $(".reasoning-section").addClass("hidden");
+                    $(".msg_cotainer").addClass("reasoning-hidden");
                 }
             });
 
@@ -167,7 +176,7 @@
                                 <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" 
                                      class="rounded-circle user_img_msg">
                             </div>
-                            <div class="msg_cotainer">
+                            <div class="msg_cotainer ${reasoningEnabled ? '' : 'reasoning-hidden'}">
                                 ${formattedResponse}
                                 <span class="msg_time">${str_time}</span>
                             </div>
@@ -319,9 +328,98 @@
             window.toggleReasoning = function(element) {
                 const content = $(element).next(".reasoning-content");
                 const icon = $(element).find(".toggle-icon");
-                
+
                 content.slideToggle(300);
                 icon.toggleClass("fa-chevron-down fa-chevron-up");
+            };
+
+            // ✅ ADD THIS NEW FUNCTION HERE
+            window.sendCommand = function(command) {
+                const date = new Date();
+                const hour = date.getHours().toString().padStart(2, '0');
+                const minute = date.getMinutes().toString().padStart(2, '0');
+                const str_time = hour + ":" + minute;
+
+                // Display user's command in chat
+                const userHtml = `
+                    <div class="d-flex justify-content-end mb-4">
+                        <div class="msg_cotainer_send">
+                            ${escapeHtml(command)}
+                            <span class="msg_time_send">${str_time}</span>
+                        </div>
+                        <div class="img_cont_msg">
+                            <img src="https://i.ibb.co/d5b84Xw/Untitled-design.png" 
+                                 class="rounded-circle user_img_msg">
+                        </div>
+                    </div>
+                `;
+
+                $("#messageFormeight").append(userHtml);
+                scrollToBottom();
+
+                // Show typing indicator
+                showTypingIndicator();
+
+                // Send to backend
+                $.ajax({
+                    data: {
+                        msg: command,
+                        show_reasoning: reasoningEnabled
+                    },
+                    type: "POST",
+                    url: "/get",
+                    timeout: 180000
+                }).done(function(data) {
+                    hideTypingIndicator();
+
+                    const botHtml = `
+                        <div class="d-flex justify-content-start mb-4">
+                            <div class="img_cont_msg">
+                                <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" 
+                                     class="rounded-circle user_img_msg">
+                            </div>
+                            <div class="msg_cotainer ${reasoningEnabled ? '' : 'reasoning-hidden'}">
+                                ${data}
+                                <span class="msg_time">${str_time}</span>
+                            </div>
+                        </div>
+                    `;
+
+                    $("#messageFormeight").append(botHtml);
+                    scrollToBottom();
+
+                    // // Special handling for reset
+                    // if (command.toLowerCase() === 'reset') {
+                    //     setTimeout(() => {
+                    //         const lastMessage = $("#messageFormeight").children().last();
+                    //         $("#messageFormeight").html("");
+                    //         $("#messageFormeight").append(lastMessage);
+                    //     }, 800);
+                    // }
+
+                }).fail(function(jqXHR, textStatus, errorThrown) {
+                    hideTypingIndicator();
+
+                    const errorHtml = `
+                        <div class="d-flex justify-content-start mb-4">
+                            <div class="img_cont_msg">
+                                <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" 
+                                     class="rounded-circle user_img_msg">
+                            </div>
+                            <div class="msg_cotainer error-message">
+                                ⚠️ <strong>Error:</strong> ${
+                                    textStatus === 'timeout'
+                                        ? 'Request timed out. Please try again.'
+                                        : 'Something went wrong. Please try again.'
+                                }
+                                <span class="msg_time">${str_time}</span>
+                            </div>
+                        </div>
+                    `;
+
+                    $("#messageFormeight").append(errorHtml);
+                    scrollToBottom();
+                });
             };
         });
     </script>
