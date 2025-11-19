@@ -69,7 +69,7 @@ def summarize_history(full_history, max_turns=MAX_HISTORY_TURNS):
 
 {old_text}
 
-Provide a brief summary (2-3 sentences) that captures the main health topics and questions."""
+Provide a brief summary that captures the main health topics and questions."""
     
     try:
         summary_response = llm.invoke(summary_prompt)
@@ -137,14 +137,83 @@ def chat():
     if not question:
         return jsonify({"error": "Empty message"}), 400
     
-    # ... (existing command handling code) ...
+    # ✅ COMMAND INTERCEPTION - Handle special commands BEFORE LLM processing
+    question_lower = question.lower()
+    
+    # Handle "reset" / "clear" command
+    if question_lower in ["reset", "clear", "restart", "new"]:
+        session["history"] = []
+        print("🔄 History cleared via command")
+        
+        response_html = """
+        <div class="answer-section" style="background: #d4edda; border-left: 4px solid #28a745;">
+            <strong>✅ Conversation Cleared!</strong><br><br>
+            Your chat history has been reset. You can start a fresh conversation now.<br><br>
+            Feel free to ask me any medical questions!
+        </div>
+        """
+        return response_html
+    
+    # Handle "help" command
+    if question_lower in ["help", "commands", "?", "how to use"]:
+        print("📖 Help command executed")
+        
+        response_html = """
+        <div class="answer-section" style="background: #e7f3ff; border-left: 4px solid #0066cc;">
+            <strong>📚 How to Use Aceso Medical AI</strong><br><br>
+            
+            <strong>Ask Medical Questions:</strong>
+            <ul>
+                <li>"What are symptoms of diabetes?"</li>
+                <li>"Treatment options for hypertension?"</li>
+                <li>"Did WHO release dengue advisories?"</li>
+            </ul>
+            
+            <strong>Commands:</strong>
+            <ul>
+                <li>Type <code>help</code> - Show this help message</li>
+                <li>Type <code>reset</code> - Clear conversation history</li>
+                <li>Type <code>reasoning on/off</code> - Toggle reasoning display</li>
+            </ul>
+            
+            <strong>Features:</strong>
+            <ul>
+                <li>✓ Search medical databases for established facts</li>
+                <li>✓ Search web for current guidelines and advisories</li>
+                <li>✓ Show reasoning process behind answers</li>
+                <li>✓ Cite sources for all information</li>
+            </ul>
+            
+            <div style="background: #fff3cd; padding: 10px; border-radius: 4px; margin-top: 10px;">
+                <strong>⚠️ Disclaimer:</strong> This is for educational purposes only. Always consult healthcare professionals for medical advice.
+            </div>
+        </div>
+        """
+        return response_html
+    
+    # Handle reasoning toggle
+    if question_lower in ["reasoning on", "reasoning off"]:
+        state = "ON" if "on" in question_lower else "OFF"
+        print(f"🔧 Reasoning display: {state}")
+        
+        response_html = f"""
+        <div class="answer-section" style="background: #fff3cd; border-left: 4px solid #ffc107;">
+            <strong>✅ Reasoning Display: {state}</strong><br><br>
+            The reasoning process will {'now be visible' if state == 'ON' else 'be hidden'} in subsequent responses.<br><br>
+            {'You can see how I think through problems!' if state == 'ON' else 'Responses will be cleaner and faster.'}
+        </div>
+        """
+        return response_html
+    
+    # ✅ Not a command - proceed with normal LLM processing
+    print(f"🔍 Processing: {question}")
     
     # Get conversation history
     history = session.get("history", [])
 
-    # ✅ FIX 1: LIMIT HISTORY SIZE - keep only last 4 exchanges (8 messages)
+    # Limit history size - keep only last 4 exchanges (8 messages)
     if len(history) > 8:
-        history = history[-8:]  # Keep only last 8 messages
+        history = history[-8:]
         session["history"] = history
         print(f"📝 Trimmed history to last 8 messages")
 
@@ -160,16 +229,13 @@ def chat():
         "step_count": 0,
         "contexts": [],
         "draft": "",
-        "grounded_score": 0.0,
         "safety_score": 0.0,
         "show_reasoning": show_reasoning,
         "used_tools": [],
         "full_observations": [],
         "last_action": {},
-        "forced_web_search": False  # ✅ ADD THIS
+        "forced_web_search": False
     }
-
-    print(f"🔍 Processing: {question}")
     
     try:
         result = agentic_rag.invoke(
@@ -181,17 +247,14 @@ def chat():
         # Separate reasoning from answer
         reasoning_html, final_answer = clean_reasoning_trace(answer)
         
-        # ✅ CRITICAL: Escape HTML to prevent breaking out of container
+        # Escape HTML to prevent breaking out of container
         import html
-        
-        # Escape the content but preserve intentional line breaks
         final_answer_safe = html.escape(final_answer).replace('\n', '<br>')
         reasoning_html_safe = html.escape(reasoning_html).replace('\n', '<br>') if reasoning_html else ""
         
-        # Save to history
-        # ✅ FIX 2: TRUNCATE LONG CONTENT for session storage
-        history.append({"role": "user", "content": question[:300]})  # Max 300 chars
-        history.append({"role": "assistant", "content": final_answer[:600]})  # Max 600 chars
+        # Save to history (truncated for session storage)
+        history.append({"role": "user", "content": question[:300]})
+        history.append({"role": "assistant", "content": final_answer[:600]})
         session["history"] = history
         
         # Build response
@@ -207,14 +270,13 @@ def chat():
                     <pre style="margin: 0; padding: 10px; background: #ffffff; border-radius: 4px; overflow-x: auto;">{reasoning_html_safe}</pre>
                 </details>
             </div>
-            """     
+            """
 
         response_html += f"""
         <div class="answer-section">
             {final_answer_safe}
         </div>
         """
-
         
         print(f"✅ Response generated: {len(response_html)} chars")
         return response_html
@@ -224,25 +286,25 @@ def chat():
         import traceback
         print(traceback.format_exc())
         
-        # ✅ User-friendly error messages
+        # User-friendly error messages
         error_str = str(e).lower()
         
         if "timeout" in error_str or "timed out" in error_str:
-            return f"""
+            return """
             <div style="background: #fff8dc; padding: 15px; border-radius: 8px; border-left: 4px solid #ffa500;">
                 <strong>⏱️ Processing Timeout</strong><br><br>
                 Your question is complex and took too long to process.<br><br>
                 <strong>Try these strategies:</strong>
                 <ul>
-                    <li>Break the question into parts (ask about treatment first, then new drugs separately)</li>
-                    <li>Simplify: "What are common Parkinson's treatments?"</li>
-                    <li>Disable reasoning traces (click the toggle button)</li>
+                    <li>Break the question into parts</li>
+                    <li>Simplify the question</li>
+                    <li>Type <code>reset</code> to clear history</li>
                 </ul>
             </div>
             """
         
         if "connection" in error_str:
-            return f"""
+            return """
             <div style="background: #ffe6e6; padding: 15px; border-radius: 8px; border-left: 4px solid #ff0000;">
                 <strong>🔌 Connection Error</strong><br><br>
                 Cannot connect to Ollama server.<br><br>
@@ -258,7 +320,7 @@ def chat():
         <div style="background: #f8d7da; padding: 15px; border-radius: 8px; border-left: 4px solid #dc3545;">
             <strong>⚠️ Error Occurred</strong><br><br>
             {str(e)[:200]}<br><br>
-            Please try rephrasing your question or type <code>reset</code> to clear history.
+            Type <code>reset</code> to clear history or try rephrasing your question.
         </div>
         """
 
@@ -271,23 +333,6 @@ def get_history():
         "history": history,
         "turn_count": len(history) // 2,
         "reasoning_enabled": ENABLE_REASONING_TRACES
-    })
-
-
-@app.route("/clear", methods=["POST"])
-def clear_history():
-    """Clear conversation history."""
-    session["history"] = []
-    return jsonify({"message": "History cleared"})
-
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    """Health check endpoint."""
-    return jsonify({
-        "status": "healthy",
-        "system": "ReAct Medical Chatbot",
-        "version": "2.0"
     })
 
 

@@ -148,6 +148,20 @@ body, html {
     border-bottom-left-radius: 4px;
 }
 
+/* When reasoning is hidden, make container wider to center answer */
+.msg_cotainer.reasoning-hidden {
+    max-width: 60%;
+    margin-left: auto;
+    margin-right: auto;
+    background: transparent !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+}
+
+.msg_cotainer.reasoning-hidden .msg_time {
+    display: none;
+}
+
 .msg_cotainer_send {
     background: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
     color: #fff;
@@ -188,7 +202,12 @@ body, html {
 }
 
 .reasoning-section.hidden {
-    display: none;
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    opacity: 0 !important;
 }
 
 .reasoning-header {
@@ -338,6 +357,15 @@ body, html {
     margin-top: 15px;
     margin-bottom: 20px;
     line-height: 1.7;
+}
+
+/* Center answer section when reasoning is hidden */
+.msg_cotainer:has(.reasoning-section.hidden) .answer-section,
+.msg_cotainer.reasoning-hidden .answer-section {
+    margin-left: 0;
+    margin-right: 0;
+    margin-top: 0;
+    width: 100%;
 }
 
 /* ALL TEXT IN ANSWER SECTION MUST BE BLACK */
@@ -723,4 +751,76 @@ body, html {
 @keyframes fadeIn {
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
+}
+
+/* ========================================================================
+   HEADER ACTION BUTTONS
+   ======================================================================== */
+
+.header-btn {
+    border-color: rgba(255, 255, 255, 0.3) !important;
+    color: rgba(255, 255, 255, 0.9) !important;
+    font-size: 13px;
+    padding: 6px 12px;
+    transition: all 0.3s ease;
+    background: transparent;
+}
+
+.header-btn:hover {
+    background: rgba(255, 255, 255, 0.15) !important;
+    border-color: rgba(255, 255, 255, 0.6) !important;
+    color: #fff !important;
+    transform: translateY(-2px);
+}
+
+.header-btn:active {
+    transform: translateY(0);
+}
+
+.header-btn i {
+    margin-right: 5px;
+}
+
+.reasoning-toggle-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    color: white;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.reasoning-toggle-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.reasoning-toggle-btn:active {
+    transform: translateY(0);
+}
+
+.reasoning-toggle-btn i {
+    margin-right: 5px;
+}
+
+/* Mobile responsiveness for header buttons */
+@media (max-width: 768px) {
+    .header-btn span {
+        display: none; /* Hide text on mobile, show only icons */
+    }
+    
+    .reasoning-toggle-btn span {
+        display: none;
+    }
+    
+    .header-btn i,
+    .reasoning-toggle-btn i {
+        margin-right: 0;
+    }
+    
+    .header-btn {
+        padding: 6px 10px;
+    }
 }

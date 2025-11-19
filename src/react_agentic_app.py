@@ -19,9 +19,7 @@ import re
 from src.helper import download_hugging_face_embeddings
 from src.prompt import (
     react_system_prompt,
-    safety_prompt,
-    polish_prompt,
-    synthesis_prompt
+    safety_prompt
 )
 
 load_dotenv()
@@ -57,7 +55,6 @@ class State(TypedDict):
     step_count: int
     contexts: List[Document]
     draft: str
-    grounded_score: float
     safety_score: float
     show_reasoning: bool
     used_tools: List[str]
@@ -187,73 +184,201 @@ def parse_react_output(text: str) -> dict:
 
 def needs_current_info(question: str) -> bool:
     """
-    Use LLM to determine if question requires current/recent information.
-    Fast classification using small model.
+    Determine if question requires current/recent information.
+    Uses fast keyword check first, then LLM if needed.
     """
-    # Cache to avoid repeated checks for same question
+    # Cache to avoid repeated checks
     if not hasattr(needs_current_info, 'cache'):
         needs_current_info.cache = {}
     
     if question in needs_current_info.cache:
         return needs_current_info.cache[question]
     
-    classifier_llm = get_llm("llama3.2:1b", temperature=0.0)
+    # ✅ CHECK KEYWORDS FIRST (fast and accurate for obvious cases)
+    if keyword_temporal_check(question):
+        needs_current_info.cache[question] = True
+        log("router", f"Temporal check (keyword): {question[:50]}... → CURRENT")
+        return True
     
-    prompt = f"""Does this question require CURRENT or RECENT information (news, updates, outbreaks, advisories from 2024-2025)?
+    # ✅ If keywords didn't catch it, use LLM for ambiguous cases
+    try:
+        classifier_llm = get_llm("llama3.2:1b", temperature=0.0)
+        
+        prompt = f"""Does this question ask about NEW, RECENT, or CURRENT information (2024-2025) and FUTURE OR appears as if a follow up to previos question?
 
 Question: {question}
 
 Answer ONLY 'YES' or 'NO':
-- YES if it mentions: dates, years, "latest", "recent", "current", "new", "this month/year", outbreaks, advisories, updates, "nowadays"
-- NO if it asks for general medical facts, definitions, or established knowledge
+- YES: new guidelines, recent advisories, latest updates, current outbreaks, published this year
+- NO: general medical facts, definitions, established symptoms, historical information
 
 Answer:"""
-    
-    try:
+        
         response = classifier_llm.invoke(prompt)
         answer = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
         
         result = "YES" in answer
         needs_current_info.cache[question] = result
         
-        log("router", f"Temporal check: {question[:50]}... → {'CURRENT' if result else 'GENERAL'}")
+        log("router", f"Temporal check (LLM): {question[:50]}... → {'CURRENT' if result else 'GENERAL'}")
         return result
-    
+        
     except Exception as e:
-        log("router", f"Temporal check failed: {e}, defaulting to keyword fallback")
-        # Fallback to expanded keyword list
-        return keyword_temporal_check(question)
+        log("router", f"Temporal check LLM failed: {e}, defaulting to False")
+        # Conservative default: assume not temporal if LLM fails
+        needs_current_info.cache[question] = False
+        return False
 
 
 def keyword_temporal_check(question: str) -> bool:
     """
-    Fallback keyword-based temporal detection.
-    More comprehensive than before.
+    Enhanced keyword-based temporal detection.
+    Returns True if question needs current/recent information.
     """
     q_lower = question.lower()
     
-    # Temporal indicators
-    temporal_words = [
+    # ✅ CRITICAL TEMPORAL KEYWORDS - high confidence indicators
+    critical_keywords = [
+        # New/Recent indicators
+        "new", "recent", "latest", "current", "updated", "nowadays", "these days",
+        
+        # Publishing/Release actions
+        "publish", "published", "release", "released", "announce", "announced",
+        "issue", "issued", "recommend", "recommended",
+        
         # Time references
-        "latest", "recent", "current", "new", "updated", "nowadays", "these days",
         "this year", "this month", "this week", "today", "yesterday", "last week",
         "right now", "currently", "presently",
         
-        # Years (flexible)
+        # Years
         "2024", "2025", "2026",
         
-        # Events/updates
-        "outbreak", "advisory", "warning", "alert", "guideline", "recommendation",
-        "release", "released", "announced", "published",
+        # Events requiring current data
+        "outbreak", "advisory", "warning", "alert", "epidemic", "pandemic",
         
-        # Actions requiring current data
-        "spreading", "trend", "rising", "increasing"
+        # Trends
+        "spreading", "trend", "trending", "rising", "increasing", "surge"
     ]
     
-    # Date patterns (e.g., "in 2025", "October 2024")
-    has_date = bool(re.search(r'\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b', q_lower))
+    # ✅ STRONG PHRASES - combinations that always mean temporal
+    strong_phrases = [
+        "did who", "did cdc", "did aha", "did fda",  # "did X publish/release"
+        "has who", "has cdc", "has aha", "has fda",
+        "new guideline", "new prevention", "new recommendation", "new treatment",
+        "published guideline", "latest guideline", "recent study",
+        "this month", "this year"
+    ]
     
-    return any(word in q_lower for word in temporal_words) or has_date
+    # Check critical keywords
+    if any(keyword in q_lower for keyword in critical_keywords):
+        return True
+    
+    # Check strong phrases
+    if any(phrase in q_lower for phrase in strong_phrases):
+        return True
+    
+    # Date patterns (e.g., "in 2025", "October 2024")
+    import re
+    if re.search(r'\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b', q_lower):
+        return True
+    
+    return False
+
+def is_follow_up_question(current_question: str, conversation_history: List[AnyMessage]) -> bool:
+    """
+    Use fast LLM to determine if question is a follow-up.
+    Much more flexible than hardcoded rules.
+    """
+    # Need at least 2 messages
+    if len(conversation_history) < 2:
+        return False
+    
+    # Extract last exchange (last 2-4 messages)
+    recent_messages = conversation_history[-4:] if len(conversation_history) >= 4 else conversation_history[-2:]
+    
+    # Build compact conversation summary
+    context_parts = []
+    for msg in recent_messages:
+        if isinstance(msg, HumanMessage):
+            content = msg.content[:150] if hasattr(msg, 'content') else ""
+            context_parts.append(f"User: {content}")
+        elif isinstance(msg, AIMessage):
+            # Extract just the answer part, skip reasoning
+            content = msg.content if hasattr(msg, 'content') else ""
+            if isinstance(content, str):
+                # Skip reasoning traces
+                if "## 📋 Final Answer" in content:
+                    content = content.split("## 📋 Final Answer")[1]
+                elif "##" in content:
+                    # Take last section
+                    content = content.split("##")[-1]
+                content = content[:200]  # First 200 chars of answer
+            context_parts.append(f"Assistant: {content}")
+    
+    context_text = "\n".join(context_parts)
+    
+    # Use fast LLM with very specific prompt
+    try:
+        classifier = get_llm("llama3.2:1b", temperature=0.0)
+        
+        prompt = f"""Look at this conversation and decide if the current question is a FOLLOW-UP.
+
+Recent conversation:
+{context_text}
+
+Current question: {current_question}
+
+A follow-up question:
+- Asks for MORE details about the previous answer
+- Uses "what were", "which ones", "those", "these", "tell me more"
+- Refers to something just mentioned WITHOUT repeating full context
+- Examples: "what were the guidelines?", "which countries?", "tell me more"
+
+NOT a follow-up:
+- Completely new topic
+- Has full context in the question itself
+- Examples: "what are symptoms of diabetes?", "tell me about heart disease"
+
+Is the current question a FOLLOW-UP?
+Answer ONLY: YES or NO"""
+
+        response = classifier.invoke(prompt)
+        answer = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
+        
+        is_followup = "YES" in answer
+        
+        log("router", f"Follow-up check (LLM): '{current_question[:40]}...' → {'FOLLOW-UP' if is_followup else 'NEW'}")
+        return is_followup
+        
+    except Exception as e:
+        log("router", f"⚠️ LLM follow-up check failed: {e}, using heuristic fallback")
+        # Fallback to simple heuristics
+        return simple_heuristic_followup(current_question, conversation_history)
+
+
+def simple_heuristic_followup(question: str, history: List[AnyMessage]) -> bool:
+    """
+    Simple fallback heuristics if LLM fails.
+    Only catches the most obvious cases.
+    """
+    q_lower = question.lower()
+    q_len = len(question.split())
+    
+    # Very obvious follow-ups
+    obvious_indicators = [
+        q_lower.startswith("what were") and q_len < 8,
+        q_lower.startswith("which") and q_len < 6,
+        q_lower.startswith(("those", "these", "that", "them")),
+        "tell me more" in q_lower,
+        "elaborate" in q_lower,
+        q_len < 4  # Very short questions
+    ]
+    
+    result = any(obvious_indicators)
+    if result:
+        log("router", f"Follow-up check (heuristic): '{question[:40]}...' → FOLLOW-UP")
+    
+    return result
 
 
 # ============================================================================
@@ -290,19 +415,100 @@ def react_reasoning(state: State) -> State:
     
     # Add system prompt if first step
     if step == 0:
-        messages = [SystemMessage(content=react_system_prompt)] + messages
+        question_lower = state["question"].lower()
+        needs_web = needs_current_info(state["question"])
+    
+        is_follow_up = False
+        if len(messages) > 2:
+            is_follow_up = is_follow_up_question(state["question"], messages)
+    
+        # ✅ CRITICAL: Enforce strict format with examples
+        enhanced_prompt = react_system_prompt + """
+
+    ⚠️⚠️⚠️ CRITICAL FORMAT REQUIREMENT ⚠️⚠️⚠️
+
+    You MUST respond in this EXACT format. NO EXCEPTIONS:
+
+    Thought: [one sentence about what you need to do]
+    Action: [MUST be one of: search_medical_database, search_web_medical, or Finish]
+    Action Input: [your search query OR final answer]
+
+    CORRECT EXAMPLES:
+
+    Example 1:
+    Thought: I need general medical facts about diabetes.
+    Action: search_medical_database
+    Action Input: diabetes symptoms causes treatment
+
+    Example 2:
+    Thought: I need current information about WHO guidelines.
+    Action: search_web_medical
+    Action Input: WHO 2025 guidelines dengue
+
+    Example 3:
+    Thought: I have enough information to answer the question.
+    Action: Finish
+    Action Input: Diabetes is a chronic condition that affects how your body processes blood sugar...
+
+    WRONG - DO NOT DO THIS:
+    ❌ "Based on the information provided, diabetes is..."
+    ❌ "The answer is..."
+    ❌ "According to the data..."
+
+    You MUST use the Thought/Action/Action Input format. DO NOT answer directly.
+    """
+    
+        # Add specific guidance based on question type
+        if is_follow_up and needs_web:
+            enhanced_prompt += """
+
+    🔔 THIS IS A FOLLOW-UP QUESTION:
+    The user wants MORE DETAILS about your previous answer.
+
+    Your FIRST response MUST be:
+    Thought: This is a follow-up asking for specific details from previous answer.
+    Action: search_web_medical
+    Action Input: [specific topic they're asking about]
+
+    Do NOT search database again - you already have general facts.
+    """
+    
+        elif needs_web:
+            enhanced_prompt += """
+
+    🔔 THIS NEEDS CURRENT INFORMATION:
+    The question asks about recent/new/published information.
+
+    Your strategy:
+    1. First: Search database for general medical facts
+    2. Then: Search web for current updates
+    3. Finally: Use Action: Finish with complete answer
+    """
+    
+        elif is_follow_up:
+            enhanced_prompt += """
+
+    🔔 THIS IS A FOLLOW-UP QUESTION:
+    The user wants MORE DETAILS about your previous answer.
+
+    Search the database for more specific information about what they're asking.
+    """
+    
+        messages = [SystemMessage(content=enhanced_prompt)] + messages
+        log("react", f"Enhanced prompt: web={needs_web}, follow_up={is_follow_up}")
+
     else:
-        # Re-emphasize format on each step
-        format_reminder = """
-CRITICAL REMINDER: You MUST use this exact format:
+        # ✅ RE-EMPHASIZE FORMAT ON EVERY SUBSEQUENT STEP
+        format_reminder = SystemMessage(content="""
+    REMINDER - Use this EXACT format:
 
-Thought: [your reasoning]
-Action: [tool_name or Finish]
-Action Input: [query or answer]
+    Thought: [your reasoning]
+    Action: [search_medical_database, search_web_medical, or Finish]
+    Action Input: [query or answer]
 
-Do NOT write anything else. Follow the format strictly.
-"""
-        messages.append(SystemMessage(content=format_reminder))
+    DO NOT write anything else. FOLLOW THE FORMAT EXACTLY.
+    """)
+        messages.append(format_reminder)
     
     # ✅ INVOKE LLM 
     response = llm.invoke(messages)
@@ -315,42 +521,61 @@ Do NOT write anything else. Follow the format strictly.
     
     # ✅ IMPROVED FALLBACK
     if not parsed["action"]:
-        log("react", "⚠️ Failed to parse action, attempting fallback")
-        
+        log("react", "⚠️ Failed to parse action - LLM did not follow format!")
+    
         response_lower = response_text.lower()
+        step = state.get("step_count", 0)
+    
+        # ✅ Check if LLM is answering directly (WRONG!)
+        direct_answer_indicators = [
+            response_text.startswith("Based on"),
+            response_text.startswith("The answer"),
+            response_text.startswith("According to"),
+            "the information provided" in response_text[:150],
+            len(response_text) > 200 and "Thought:" not in response_text
+        ]
+    
+        if any(direct_answer_indicators):
+            log("react", "❌ LLM answered directly instead of using ReAct format - forcing Finish")
         
-        # Check for web search indicators
-        if "web" in response_lower or "latest" in response_lower or "current" in response_lower:
-            parsed["action"] = "search_web_medical"
-            # Extract query from question
-            if not parsed["action_input"]:
-                parsed["action_input"] = state["question"]
-        
-        # Check for database search indicators
-        elif "database" in response_lower or "definition" in response_lower:
-            parsed["action"] = "search_medical_database"
-            if not parsed["action_input"]:
-                parsed["action_input"] = state["question"]
-        
-        # Check for finish indicators
-        elif "finish" in response_lower:
+            # If it answered directly, treat it as the final answer
             parsed["action"] = "Finish"
-            parsed["action_input"] = response_text
-        
-        # Default fallback
-        else:
-            log("react", "⚠️ No action detected, defaulting to database search")
+            parsed["action_input"] = response_text[:800]  # Use direct answer
+            parsed["thought"] = "LLM provided direct answer"
+    
+        # If we've failed to parse multiple times, force finish
+        elif step >= 2:
+            log("react", "⚠️ Multiple parse failures - forcing Finish to avoid loop")
+            parsed["action"] = "Finish"
+            parsed["action_input"] = "I encountered formatting issues. Please rephrase your question."
+            parsed["thought"] = "Format failures"
+    
+        # Otherwise try to infer action from content
+        elif "web" in response_lower or "search" in response_lower[:100]:
+            log("react", "Inferring: search_web_medical")
+            parsed["action"] = "search_web_medical"
+            parsed["action_input"] = state["question"]
+    
+        elif "database" in response_lower:
+            log("react", "Inferring: search_medical_database")
             parsed["action"] = "search_medical_database"
             parsed["action_input"] = state["question"]
+    
+        else:
+            # Last resort - search database
+            log("react", "⚠️ No clear action detected - defaulting to database")
+            parsed["action"] = "search_medical_database"
+            parsed["action_input"] = state["question"]
+
     
     # ✅ STORE PARSED ACTION IN STATE (for router to use)
     state["last_action"] = parsed
     
     # Add to reasoning trace
     trace_entry = f"""🧠 **Thought {step + 1}:** {parsed['thought']}
-🎬 **Action:** {parsed['action']}
-📝 **Input:** {parsed['action_input']}
-"""
+                🎬 **Action:** {parsed['action']}
+                📝 **Input:** {parsed['action_input']}
+                """
     
     if "reasoning_trace" not in state:
         state["reasoning_trace"] = []
@@ -373,64 +598,12 @@ Do NOT write anything else. Follow the format strictly.
 
 def execute_tools(state: State) -> State:
     """
-    Execute tools with ONE-TIME forced web search.
+    Execute tools with duplicate prevention and clear guidance.
     """
     messages = state["messages"]
     last_action = state.get("last_action", {})
     action = last_action.get("action", "").lower()
     action_input = last_action.get("action_input", "")
-    
-    # ✅ CRITICAL: Check if we already forced web search
-    if "forced_web_search" not in state:
-        state["forced_web_search"] = False
-    
-    # ✅ Only intercept Finish if we haven't forced yet
-    if "finish" in action and not state["forced_web_search"]:
-        question_lower = state["question"].lower()
-        used_tools = state.get("used_tools", [])
-        
-        # 🚨 ‼️ CHECK: USE LLM/ WHY SEARCH QUERY HAS "2025 LATEST ?"
-        requires_web = any([
-            "this year" in question_lower,
-            "new guidelines" in question_lower,
-            "who release" in question_lower,
-            "latest" in question_lower,
-            "recent" in question_lower,
-            "2025" in question_lower
-        ])
-        
-        # If web needed and not done, FORCE ONCE
-        if requires_web and "web" not in used_tools:
-            log("tools", "🌐 FORCING web search (one-time only)")
-            
-            words = question_lower.replace("?", "").split()
-            keywords = [w for w in words if len(w) > 3 and w not in ['what', 'should', 'person', 'with', 'this', 'year']]
-            
-            search_query = " ".join(keywords[:5]) + " 2025 latest"
-            
-            action = "search_web_medical"
-            action_input = search_query
-            
-            # ✅ MARK THAT WE FORCED - don't force again!
-            state["forced_web_search"] = True
-            
-            state["last_action"] = {
-                "action": "search_web_medical",
-                "action_input": search_query,
-                "thought": "Forced web search"
-            }
-        else:
-            # Normal finish - either no web needed or already forced
-            state["draft"] = action_input if action_input and action_input != "None" else ""
-            log("tools", "Finish accepted")
-            return state
-    elif "finish" in action:
-        # We already forced, accept finish this time
-        state["draft"] = action_input if action_input and action_input != "None" else ""
-        log("tools", "Finish accepted (already forced)")
-        return state
-    
-    log("tools", f"Executing: {action} with input: {action_input[:50]}...")
     
     # Initialize tracking
     if "used_tools" not in state:
@@ -439,74 +612,115 @@ def execute_tools(state: State) -> State:
         state["full_observations"] = []
     if "tool_history" not in state:
         state["tool_history"] = []
+    if "forced_web_search" not in state:
+        state["forced_web_search"] = False
     
-    # Duplicate detection
-    current_call = f"{action}|{action_input[:50]}"  # Use more chars for better matching
-
-    if current_call in state.get("tool_history", []):
-        log("tools", f"🚫 DUPLICATE DETECTED - breaking loop!")
-        
-        # If repeating database and web not used, FORCE web search
-        if "database" in action and "web" not in state.get("used_tools", []):
-            log("tools", "→ FORCING web search to break loop")
+    # ✅ INTERCEPT FINISH to force web search if needed
+    if "finish" in action:
+        if not state["forced_web_search"]:
+            requires_web = needs_current_info(state["question"])
             
-            # Extract temporal keywords from question
-            question_lower = state["question"].lower()
-            keywords = []
-            for word in question_lower.split():
-                if len(word) > 4 and word not in ['what', 'about', 'causes']:
-                    keywords.append(word)
+            # If web needed and not done yet, FORCE ONCE
+            if requires_web and "web" not in state["used_tools"]:
+                log("tools", "🌐 INTERCEPTING Finish - forcing web search")
+                
+                action = "search_web_medical"
+                action_input = state["question"]
+                state["forced_web_search"] = True
+                
+                state["last_action"] = {
+                    "action": "search_web_medical",
+                    "action_input": action_input,
+                    "thought": "Forced web search for current information"
+                }
+                # Continue to execute web search below
+            else:
+                # Can finish now
+                state["draft"] = action_input if action_input and action_input != "None" else ""
+                log("tools", "Finish accepted")
+                return state
+        else:
+            # Already forced once, allow finish
+            state["draft"] = action_input if action_input and action_input != "None" else ""
+            log("tools", "Finish accepted (already forced)")
+            return state
+    
+    log("tools", f"Executing: {action} with input: {action_input[:50]}...")
+    
+    # ✅ DUPLICATE DETECTION - prevent infinite loops
+    current_call = f"{action}|{action_input[:50]}"
+    
+    if current_call in state["tool_history"]:
+        log("tools", f"🚫 DUPLICATE DETECTED: {action}")
+        
+        # If repeating database and haven't used web, switch to web
+        if "database" in action and "web" not in state["used_tools"]:
+            log("tools", "→ Switching to web search to break loop")
             
             action = "search_web_medical"
-            action_input = " ".join(keywords[:5]) + " outbreak advisory 2025"
+            action_input = state["question"]  # Use full question
             
-            # Update last_action
             state["last_action"] = {
                 "action": "search_web_medical",
                 "action_input": action_input,
-                "thought": "Forced web search to break duplicate loop"
+                "thought": "Switched to web due to duplicate database call"
             }
+            # Don't add to history yet - will be added below after new action
             
-            # Clear the duplicate from history so this new search can proceed
-            # Don't add to history yet - will be added after successful execution
+        elif "web" in action:
+            # Duplicate web search - force finish
+            log("tools", "→ FORCING FINISH (duplicate web search)")
             
+            observation = "Already searched web multiple times. Proceeding to final answer."
+            state["full_observations"].append(observation)
+            
+            # Add directive message to force finish
+            state["messages"].append(HumanMessage(content=f"""Observation: {observation}
+
+🛑 You have searched both database and web. No more searches needed.
+
+You MUST finish NOW:
+Thought: I have complete information from all sources
+Action: Finish
+Action Input: [Write comprehensive answer using all gathered information]"""))
+            
+            return state
         else:
-            # Already used both tools or repeating web search - just finish
-            log("tools", "→ FORCING FINISH - duplicate detected")
-            
-            state["draft"] = "FORCED_FINISH_DUE_TO_DUPLICATE"
-            state["last_action"] = {
-                "action": "Finish",
-                "action_input": "Forcing finish due to duplicate",
-                "thought": "Breaking loop"
-            }
+            # Other duplicate - force finish
+            log("tools", "→ FORCING FINISH (unknown duplicate)")
+            state["draft"] = "FORCED_FINISH_DUPLICATE"
             return state
     
-    
+    # Add current call to history
     state["tool_history"].append(current_call)
     
-    # Match tool
+    # ✅ MATCH TOOL
     matched_tool = None
-    if "web" in action:
+    if "web" in action or "internet" in action:
         matched_tool = "search_web_medical"
     elif "database" in action or ("medical" in action and "web" not in action):
         matched_tool = "search_medical_database"
     else:
+        # Default to database
         matched_tool = "search_medical_database"
     
     log("tools", f"✓ Matched: {matched_tool}")
     
-    # Execute
+    # ✅ EXECUTE TOOL
     observation = ""
     
     if matched_tool == "search_medical_database":
-        retriever = docsearch.as_retriever(search_kwargs={"k": 6})
-        docs = retriever.invoke(action_input)
-        state["contexts"] = docs
-        observation = search_medical_database.invoke(action_input)
-        
-        if "database" not in state["used_tools"]:
-            state["used_tools"].append("database")
+        try:
+            retriever = docsearch.as_retriever(search_kwargs={"k": 6})
+            docs = retriever.invoke(action_input)
+            state["contexts"] = docs
+            observation = search_medical_database.invoke(action_input)
+            
+            if "database" not in state["used_tools"]:
+                state["used_tools"].append("database")
+        except Exception as e:
+            log("tools", f"⚠️ Database error: {str(e)}")
+            observation = "Database search failed."
     
     elif matched_tool == "search_web_medical":
         try:
@@ -519,7 +733,7 @@ def execute_tools(state: State) -> State:
             log("tools", f"⚠️ Web error: {str(e)}")
             observation = "Web search failed."
     
-    # Store
+    # ✅ STORE OBSERVATION
     state["full_observations"].append(observation)
     
     trace_entry = f"""👁️ **Observation:** {observation[:300]}...
@@ -527,43 +741,87 @@ def execute_tools(state: State) -> State:
 """
     state["reasoning_trace"].append(trace_entry.strip())
     
-    tools_used = ", ".join(state["used_tools"])
-    # Build observation message with clear next step instructions
-    used_tools = state.get("used_tools", [])
-    question_lower = state["question"].lower()
-
-    # Check if question needs web search
-    needs_web = any(word in question_lower for word in ["advisory", "outbreak", "this month", "released", "who", "latest"])
-
-    if needs_web and "web" not in used_tools:
+    # ✅ BUILD DIRECTIVE OBSERVATION MESSAGE
+    used_tools = state["used_tools"]
+    has_database = "database" in used_tools
+    has_web = "web" in used_tools
+    
+    # Determine what to do next
+    if has_database and has_web:
+        # Has BOTH sources - MUST finish
         next_instruction = """
-    You found medical facts, but the question also asks about CURRENT information (advisories, outbreaks, releases).
 
-    You MUST now search the web:
-    Thought: I have medical facts but need current WHO advisory information
-    Action: search_web_medical
-    Action Input: WHO dengue advisory outbreak 2025
-    """
+✅ **YOU HAVE BOTH SOURCES NOW** (medical database + web search)
+
+You MUST finish immediately:
+
+Thought: I have complete information from both medical database and current web sources
+Action: Finish
+Action Input: [Write comprehensive answer addressing all parts of the question]
+
+DO NOT search again. FINISH NOW."""
+
+    elif has_database and not has_web:
+        # Has database, check if needs web
+        needs_web = needs_current_info(state["question"])
+        
+        if needs_web:
+            next_instruction = f"""
+
+⚠️ You have general medical facts, but this question asks about CURRENT/RECENT information.
+
+Your NEXT action MUST be:
+
+Thought: I have background facts but need current updates from the web
+Action: search_web_medical
+Action Input: {state["question"]}
+
+Focus on the temporal aspect: new guidelines, recent updates, current advisories."""
+
+        else:
+            next_instruction = """
+
+✅ You have sufficient information from the medical database.
+
+You MUST finish now:
+
+Thought: I have all the medical information needed to answer the question
+Action: Finish
+Action Input: [Write clear answer based on database information]
+
+DO NOT search again. FINISH NOW."""
+
+    elif has_web and not has_database:
+        # Has web only (rare case - usually follow-ups)
+        next_instruction = """
+
+✅ You have current information from web search.
+
+You MUST finish now:
+
+Thought: I have current web information to answer the question
+Action: Finish
+Action Input: [Write answer using the web search results]
+
+DO NOT search again. FINISH NOW."""
+
     else:
+        # No tools used yet (first search result)
         next_instruction = """
-    You now have all the information needed.
 
-    Provide your final answer:
-    Thought: I have all the information to answer both parts of the question
-    Action: Finish
-    Action Input: [Write complete answer addressing causes AND current advisories]
-    """
+Continue with your search strategy based on the question type."""
 
+    # Build final observation message
     obs_message = f"""Observation from {matched_tool}:
 
-    {observation[:600]}...
+{observation[:600]}
 
-    Tools already used: {", ".join(used_tools)}
-    {next_instruction}
-    """
+Tools used so far: {", ".join(used_tools)}
+{next_instruction}"""
+
     state["messages"].append(HumanMessage(content=obs_message))
     
-    log("tools", f"Added {len(observation)} chars")
+    log("tools", f"Added observation ({len(observation)} chars)")
     
     return state
 
@@ -600,7 +858,7 @@ def generate_response(state: State) -> State:
             final_answer = "I couldn't gather enough information to answer your question. Please try rephrasing."
         else:
             # Combine all observations
-            combined_obs = "\n\n---\n\n".join(observations[:3])  # Max 3
+            combined_obs = "\n\n---\n\n".join(observations)  # Max 3
             
             log("generate", f"Synthesizing from {len(observations)} observations")
             
@@ -612,9 +870,9 @@ def generate_response(state: State) -> State:
             Question: {state['question']}
 
             Information:
-            {combined_obs[:1500]}
+            {combined_obs}
 
-            Provide a clear 3-4 sentence answer:"""
+            Provide a clear and brief answer:"""
             
             try:
                 response = llm.invoke(synthesis_prompt)
@@ -733,7 +991,7 @@ def check_safety(state: State) -> State:
 
 def should_continue(state: State) -> Literal["tools", "generate", "end"]:
     """
-    Smart routing with LLM-based temporal detection.
+    Smart routing with LLM-based follow-up detection.
     """
     messages = state["messages"]
     if not messages:
@@ -759,12 +1017,37 @@ def should_continue(state: State) -> Literal["tools", "generate", "end"]:
     
     # If Finish, check if we should force web search
     if "finish" in action_lower:
-        question_lower = state["question"].lower()
+        current_question = state["question"]
+        question_lower = current_question.lower()
         used_tools = state.get("used_tools", [])
         
-        # ✅ USE LLM TO DETECT TEMPORAL QUESTIONS
-        requires_web = needs_current_info(state["question"])
+        # ✅ PRIMARY CHECK: Is this question temporal?
+        requires_web = needs_current_info(current_question)
         
+        # ✅ SECONDARY CHECK: Is this a follow-up to a temporal question?
+        if not requires_web and len(messages) > 2:
+            # Check if this is a follow-up using LLM
+            is_follow_up = is_follow_up_question(current_question, messages)
+            
+            if is_follow_up:
+                # Check if previous question used web search
+                previous_used_web = False
+                
+                for msg in messages[-6:]:
+                    if hasattr(msg, 'content') and isinstance(msg.content, str):
+                        msg_content = msg.content.lower()
+                        if any(indicator in msg_content for indicator in [
+                            "search_web_medical", "🌐", "advisory", "outbreak", 
+                            "guideline", "latest", "published"
+                        ]):
+                            previous_used_web = True
+                            break
+                
+                if previous_used_web:
+                    log("router", "Follow-up to temporal question → forcing web")
+                    requires_web = True
+        
+        # ✅ FORCE WEB SEARCH if needed
         if requires_web and "web" not in used_tools:
             log("router", "Finish detected but web search needed → tools")
             return "tools"
@@ -854,7 +1137,6 @@ if __name__ == "__main__":
         "step_count": 0,
         "contexts": [],
         "draft": "",
-        "grounded_score": 0.0,
         "safety_score": 0.0,
         "show_reasoning": True  # Set False to hide reasoning from user
     }
