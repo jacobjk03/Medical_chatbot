@@ -9,7 +9,7 @@ from langchain.tools import tool
 from langchain_pinecone import PineconeVectorStore
 from langchain_core.documents import Document
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, SystemMessage
-from langchain_community.chat_models import ChatOllama
+from langchain_groq import ChatGroq
 from sentence_transformers import CrossEncoder
 from ddgs import DDGS
 from dotenv import load_dotenv
@@ -17,10 +17,7 @@ import os
 import re
 
 from src.helper import download_hugging_face_embeddings
-from src.prompt import (
-    react_system_prompt,
-    safety_prompt
-)
+from src.prompt import react_system_prompt, safety_prompt
 
 load_dotenv()
 
@@ -60,7 +57,8 @@ class State(TypedDict):
     used_tools: List[str]
     full_observations: List[str]
     last_action: dict
-    forced_web_search: bool  # ✅ ADD THIS
+    forced_web_search: bool
+    tool_history: List[str]
 
 
 # ============================================================================
@@ -100,6 +98,47 @@ def search_medical_database(query: str) -> str:
     return "\n\n".join(results) if results else "No database results found."
 
 
+# Domains that are NOT specific medical article sources
+NON_MEDICAL_DOMAINS = {
+    "foxnews.com", "cnn.com", "bbc.com", "bbc.co.uk", "nytimes.com",
+    "washingtonpost.com", "theguardian.com", "reuters.com", "apnews.com",
+    "usatoday.com", "nbcnews.com", "abcnews.go.com", "cbsnews.com",
+    "msn.com", "yahoo.com", "huffpost.com", "dailymail.co.uk",
+    "nypost.com", "politico.com", "thehill.com", "axios.com",
+}
+
+# Preferred medical/health domains (results from these ranked higher)
+PREFERRED_MEDICAL_DOMAINS = {
+    "who.int", "nih.gov", "cdc.gov", "pubmed.ncbi.nlm.nih.gov",
+    "ncbi.nlm.nih.gov", "mayoclinic.org", "webmd.com", "healthline.com",
+    "medlineplus.gov", "nejm.org", "thelancet.com", "bmj.com",
+    "jamanetwork.com", "mdanderson.org", "clevelandclinic.org",
+    "hopkinsmedicine.org", "drugs.com", "rxlist.com", "uptodate.com",
+    "heart.org", "diabetes.org", "cancer.org", "lung.org",
+    "medscape.com", "emedicine.medscape.com",
+}
+
+
+def _is_non_medical(url: str) -> bool:
+    """Return True if URL is clearly a non-medical news homepage."""
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower().lstrip("www.")
+        return domain in NON_MEDICAL_DOMAINS
+    except Exception:
+        return False
+
+
+def _is_preferred_medical(url: str) -> bool:
+    """Return True if URL is from a trusted medical source."""
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower().lstrip("www.")
+        return any(domain == d or domain.endswith("." + d) for d in PREFERRED_MEDICAL_DOMAINS)
+    except Exception:
+        return False
+
+
 @tool
 def search_web_medical(query: str) -> str:
     """
@@ -112,22 +151,39 @@ def search_web_medical(query: str) -> str:
     - Questions mentioning 'latest', 'recent', 'current', or specific years
     """
     try:
+        # First try with a medical-focused query
+        medical_query = f"{query} site:who.int OR site:nih.gov OR site:cdc.gov OR site:pubmed.ncbi.nlm.nih.gov OR site:mayoclinic.org OR site:healthline.com OR site:webmd.com"
+
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=4))
-        
+            results = list(ddgs.text(medical_query, max_results=6))
+
+        # Fallback: if medical query returns too few results, retry with plain query
+        if len(results) < 2:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=8))
+
         if not results:
             return "No web results found."
-        
+
+        # Sort: preferred medical domains first, then others, exclude non-medical homepages
+        preferred = [r for r in results if _is_preferred_medical(r.get("href", ""))]
+        others = [r for r in results if not _is_preferred_medical(r.get("href", "")) and not _is_non_medical(r.get("href", ""))]
+        filtered = (preferred + others)[:4]
+
+        # If nothing survived filtering, fall back to all results (at least provide something)
+        if not filtered:
+            filtered = results[:4]
+
         # Format results
         formatted = []
-        for i, r in enumerate(results, 1):
+        for r in filtered:
             title = r.get("title", "Untitled")
             url = r.get("href", "")
             snippet = (r.get("body") or r.get("snippet") or "")[:800]
             formatted.append(f"🌐 {title}\n{url}\n{snippet}...")
-        
+
         return "\n\n".join(formatted)
-    
+
     except Exception as e:
         return f"Web search error: {str(e)}"
 
@@ -138,14 +194,12 @@ tools = [search_medical_database, search_web_medical]
 # HELPER FUNCTIONS
 # ============================================================================
 
-def get_llm(model: str = "llama3.2:1b", temperature: float = 0.2):
-    """Get LLM instance with optimized settings."""
-    return ChatOllama(
-        model=model, 
-        temperature=temperature, 
-        num_predict=250,  # ✅ Increased from 200
-        num_ctx=4096,     # ✅ Increased from 2048 - can see more history
-        timeout=45.0      # ✅ Increased from 30
+def get_llm(model: str = "llama-3.1-8b-instant", temperature: float = 0.2):
+    """Get LLM instance."""
+    return ChatGroq(
+        model=model,
+        temperature=temperature,
+        groq_api_key=os.getenv("GROQ_API_KEY")
     )
 
 def log(node: str, message: str):
@@ -185,200 +239,94 @@ def parse_react_output(text: str) -> dict:
 def needs_current_info(question: str) -> bool:
     """
     Determine if question requires current/recent information.
-    Uses fast keyword check first, then LLM if needed.
+    LLM-only: no hardcoded keywords — the model understands context and nuance better.
+    Result is cached to avoid duplicate LLM calls within the same request.
     """
-    # Cache to avoid repeated checks
     if not hasattr(needs_current_info, 'cache'):
         needs_current_info.cache = {}
-    
+
     if question in needs_current_info.cache:
         return needs_current_info.cache[question]
-    
-    # ✅ CHECK KEYWORDS FIRST (fast and accurate for obvious cases)
-    if keyword_temporal_check(question):
-        needs_current_info.cache[question] = True
-        log("router", f"Temporal check (keyword): {question[:50]}... → CURRENT")
-        return True
-    
-    # ✅ If keywords didn't catch it, use LLM for ambiguous cases
+
     try:
-        classifier_llm = get_llm("llama3.2:1b", temperature=0.0)
-        
-        prompt = f"""Does this question ask about NEW, RECENT, or CURRENT information (2024-2025) and FUTURE OR appears as if a follow up to previos question?
+        classifier_llm = get_llm("llama-3.1-8b-instant", temperature=0.0)
+
+        prompt = f"""Does this medical question require CURRENT or RECENT information to answer well?
 
 Question: {question}
 
 Answer ONLY 'YES' or 'NO':
-- YES: new guidelines, recent advisories, latest updates, current outbreaks, published this year
-- NO: general medical facts, definitions, established symptoms, historical information
+- YES: asks about current outbreaks, recent guidelines, latest research, new treatments, ongoing events, specific recent years
+- NO: asks about medical definitions, established facts, general symptoms, anatomy, how diseases work
 
 Answer:"""
-        
+
         response = classifier_llm.invoke(prompt)
         answer = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
-        
+
         result = "YES" in answer
         needs_current_info.cache[question] = result
-        
+
         log("router", f"Temporal check (LLM): {question[:50]}... → {'CURRENT' if result else 'GENERAL'}")
         return result
-        
+
     except Exception as e:
-        log("router", f"Temporal check LLM failed: {e}, defaulting to False")
-        # Conservative default: assume not temporal if LLM fails
+        log("router", f"Temporal check failed: {e} — defaulting to False")
         needs_current_info.cache[question] = False
         return False
 
-
-def keyword_temporal_check(question: str) -> bool:
-    """
-    Enhanced keyword-based temporal detection.
-    Returns True if question needs current/recent information.
-    """
-    q_lower = question.lower()
-    
-    # ✅ CRITICAL TEMPORAL KEYWORDS - high confidence indicators
-    critical_keywords = [
-        # New/Recent indicators
-        "new", "recent", "latest", "current", "updated", "nowadays", "these days",
-        
-        # Publishing/Release actions
-        "publish", "published", "release", "released", "announce", "announced",
-        "issue", "issued", "recommend", "recommended",
-        
-        # Time references
-        "this year", "this month", "this week", "today", "yesterday", "last week",
-        "right now", "currently", "presently",
-        
-        # Years
-        "2024", "2025", "2026",
-        
-        # Events requiring current data
-        "outbreak", "advisory", "warning", "alert", "epidemic", "pandemic",
-        
-        # Trends
-        "spreading", "trend", "trending", "rising", "increasing", "surge"
-    ]
-    
-    # ✅ STRONG PHRASES - combinations that always mean temporal
-    strong_phrases = [
-        "did who", "did cdc", "did aha", "did fda",  # "did X publish/release"
-        "has who", "has cdc", "has aha", "has fda",
-        "new guideline", "new prevention", "new recommendation", "new treatment",
-        "published guideline", "latest guideline", "recent study",
-        "this month", "this year"
-    ]
-    
-    # Check critical keywords
-    if any(keyword in q_lower for keyword in critical_keywords):
-        return True
-    
-    # Check strong phrases
-    if any(phrase in q_lower for phrase in strong_phrases):
-        return True
-    
-    # Date patterns (e.g., "in 2025", "October 2024")
-    import re
-    if re.search(r'\b(20\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b', q_lower):
-        return True
-    
-    return False
-
 def is_follow_up_question(current_question: str, conversation_history: List[AnyMessage]) -> bool:
     """
-    Use fast LLM to determine if question is a follow-up.
-    Much more flexible than hardcoded rules.
+    LLM-only follow-up detection — no hardcoded rules.
+    The model sees the recent conversation and decides based on actual context.
     """
-    # Need at least 2 messages
     if len(conversation_history) < 2:
         return False
-    
-    # Extract last exchange (last 2-4 messages)
+
+    # Build recent conversation context for the LLM
     recent_messages = conversation_history[-4:] if len(conversation_history) >= 4 else conversation_history[-2:]
-    
-    # Build compact conversation summary
+
     context_parts = []
     for msg in recent_messages:
         if isinstance(msg, HumanMessage):
-            content = msg.content[:150] if hasattr(msg, 'content') else ""
-            context_parts.append(f"User: {content}")
+            context_parts.append(f"User: {msg.content[:150]}")
         elif isinstance(msg, AIMessage):
-            # Extract just the answer part, skip reasoning
             content = msg.content if hasattr(msg, 'content') else ""
             if isinstance(content, str):
-                # Skip reasoning traces
                 if "## 📋 Final Answer" in content:
                     content = content.split("## 📋 Final Answer")[1]
                 elif "##" in content:
-                    # Take last section
                     content = content.split("##")[-1]
-                content = content[:200]  # First 200 chars of answer
+                content = content[:200]
             context_parts.append(f"Assistant: {content}")
-    
+
     context_text = "\n".join(context_parts)
-    
-    # Use fast LLM with very specific prompt
+
     try:
-        classifier = get_llm("llama3.2:1b", temperature=0.0)
-        
-        prompt = f"""Look at this conversation and decide if the current question is a FOLLOW-UP.
+        classifier = get_llm("llama-3.1-8b-instant", temperature=0.0)
+
+        prompt = f"""Look at this conversation and decide if the current question is a FOLLOW-UP to the previous exchange.
 
 Recent conversation:
 {context_text}
 
 Current question: {current_question}
 
-A follow-up question:
-- Asks for MORE details about the previous answer
-- Uses "what were", "which ones", "those", "these", "tell me more"
-- Refers to something just mentioned WITHOUT repeating full context
-- Examples: "what were the guidelines?", "which countries?", "tell me more"
+FOLLOW-UP: references something from the previous answer, asks for more detail, uses pronouns like "those", "they", "it" referring to what was just discussed, or is too short/vague to stand alone.
+NOT a follow-up: introduces a completely new medical topic with full context.
 
-NOT a follow-up:
-- Completely new topic
-- Has full context in the question itself
-- Examples: "what are symptoms of diabetes?", "tell me about heart disease"
-
-Is the current question a FOLLOW-UP?
 Answer ONLY: YES or NO"""
 
         response = classifier.invoke(prompt)
         answer = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
-        
+
         is_followup = "YES" in answer
-        
         log("router", f"Follow-up check (LLM): '{current_question[:40]}...' → {'FOLLOW-UP' if is_followup else 'NEW'}")
         return is_followup
-        
+
     except Exception as e:
-        log("router", f"⚠️ LLM follow-up check failed: {e}, using heuristic fallback")
-        # Fallback to simple heuristics
-        return simple_heuristic_followup(current_question, conversation_history)
-
-
-def simple_heuristic_followup(question: str, history: List[AnyMessage]) -> bool:
-    """
-    Simple fallback heuristics if LLM fails.
-    Only catches the most obvious cases.
-    """
-    q_lower = question.lower()
-    q_len = len(question.split())
-    
-    # Very obvious follow-ups
-    obvious_indicators = [
-        q_lower.startswith("what were") and q_len < 8,
-        q_lower.startswith("which") and q_len < 6,
-        q_lower.startswith(("those", "these", "that", "them")),
-        "tell me more" in q_lower,
-        "elaborate" in q_lower,
-        q_len < 4  # Very short questions
-    ]
-    
-    result = any(obvious_indicators)
-    if result:
-        log("router", f"Follow-up check (heuristic): '{question[:40]}...' → FOLLOW-UP")
-    
-    return result
+        log("router", f"Follow-up check failed: {e} — defaulting to False")
+        return False
 
 
 # ============================================================================
@@ -411,7 +359,7 @@ def react_reasoning(state: State) -> State:
         return state
     
     # Build conversation context
-    llm = get_llm("llama3", temperature=0.1)
+    llm = get_llm("llama-3.3-70b-versatile", temperature=0.1)
     
     # Add system prompt if first step
     if step == 0:
@@ -522,27 +470,40 @@ def react_reasoning(state: State) -> State:
     # ✅ IMPROVED FALLBACK
     if not parsed["action"]:
         log("react", "⚠️ Failed to parse action - LLM did not follow format!")
-    
+
         response_lower = response_text.lower()
         step = state.get("step_count", 0)
-    
-        # ✅ Check if LLM is answering directly (WRONG!)
-        direct_answer_indicators = [
+
+        # ✅ Detect LLM refusal — treat as a safe Finish, not a parse error
+        refusal_indicators = [
+            "i can't answer" in response_lower,
+            "i cannot answer" in response_lower,
+            "i'm not able to" in response_lower,
+            "i am not able to" in response_lower,
+            "i won't" in response_lower,
+            "i will not provide" in response_lower,
+            "unsafe" in response_lower and len(response_text) < 200,
+        ]
+
+        if any(refusal_indicators):
+            log("react", "🚫 LLM refused to answer — treating as safe Finish")
+            parsed["action"] = "Finish"
+            parsed["action_input"] = "I'm unable to provide information on this topic as it may be unsafe. Please consult a qualified healthcare professional."
+            parsed["thought"] = "LLM refused — safety concern"
+
+        # ✅ Check if LLM is answering directly (WRONG format but valid content)
+        elif any([
             response_text.startswith("Based on"),
             response_text.startswith("The answer"),
             response_text.startswith("According to"),
             "the information provided" in response_text[:150],
             len(response_text) > 200 and "Thought:" not in response_text
-        ]
-    
-        if any(direct_answer_indicators):
+        ]):
             log("react", "❌ LLM answered directly instead of using ReAct format - forcing Finish")
-        
-            # If it answered directly, treat it as the final answer
             parsed["action"] = "Finish"
-            parsed["action_input"] = response_text[:800]  # Use direct answer
+            parsed["action_input"] = response_text[:800]
             parsed["thought"] = "LLM provided direct answer"
-    
+
         # If we've failed to parse multiple times, force finish
         elif step >= 2:
             log("react", "⚠️ Multiple parse failures - forcing Finish to avoid loop")
@@ -711,22 +672,17 @@ Action Input: [Write comprehensive answer using all gathered information]"""))
     
     if matched_tool == "search_medical_database":
         try:
-            retriever = docsearch.as_retriever(search_kwargs={"k": 6})
-            docs = retriever.invoke(action_input)
-            state["contexts"] = docs
             observation = search_medical_database.invoke(action_input)
-            
             if "database" not in state["used_tools"]:
                 state["used_tools"].append("database")
         except Exception as e:
             log("tools", f"⚠️ Database error: {str(e)}")
             observation = "Database search failed."
-    
+
     elif matched_tool == "search_web_medical":
         try:
             observation = search_web_medical.invoke(action_input)
-            state["contexts"] = []
-            
+            # Do NOT wipe contexts here — database docs from prior step are still useful
             if "web" not in state["used_tools"]:
                 state["used_tools"].append("web")
         except Exception as e:
@@ -842,9 +798,25 @@ def generate_response(state: State) -> State:
     log("generate", "=" * 50)
     
     draft = state.get("draft", "")
-    
-    # If draft already exists from Finish action, use it
-    if draft and len(draft) > 50:
+
+    # Recover draft from last_action if should_continue routed here directly
+    # (bypassing execute_tools, which is the only other place draft gets set)
+    if not draft:
+        last_action = state.get("last_action", {})
+        if last_action.get("action", "").lower() == "finish":
+            candidate = last_action.get("action_input", "")
+            if candidate and candidate != "None":
+                draft = candidate
+                log("generate", f"Recovered draft from last_action Finish: {len(draft)} chars")
+
+    # Strip any disclaimer the LLM may have written into its own answer
+    # (the frontend always adds one fixed disclaimer — we don't want duplicates)
+    for marker in ["⚠️ Disclaimer:", "**⚠️ Disclaimer:**", "Disclaimer:"]:
+        if marker in draft:
+            draft = draft.split(marker)[0].strip()
+
+    # If draft exists from Finish action, use it directly
+    if draft:
         log("generate", f"Using draft from Finish action: {len(draft)} chars")
         final_answer = draft
     else:
@@ -862,8 +834,8 @@ def generate_response(state: State) -> State:
             
             log("generate", f"Synthesizing from {len(observations)} observations")
             
-            # Generate answer using MedGemma
-            llm = get_llm("alibayram/medgemma:4b", temperature=0.2)
+            # Generate answer from observations
+            llm = get_llm("llama-3.1-8b-instant", temperature=0.2)
             
             synthesis_prompt = f"""Answer this question based on the information below.
 
@@ -934,14 +906,11 @@ def generate_response(state: State) -> State:
     # Add the answer
     final_text += final_answer.strip()
 
-    # Add references section with better formatting
+    # Add references section
     if references:
         final_text += "\n\n---\n\n## 📚 Sources\n\n"
         for ref in references:
-            final_text += f"{ref}\n"  # Remove bullet point, just direct listing
-
-    # Add disclaimer
-    final_text += "\n\n---\n\n**⚠️ Disclaimer:** This information is for educational purposes only. Please consult a qualified healthcare professional for personal medical advice."
+            final_text += f"{ref}\n"
     
     # Store in state
     state["draft"] = final_text
@@ -957,31 +926,35 @@ def generate_response(state: State) -> State:
 # ============================================================================
 
 def check_safety(state: State) -> State:
-    """Check if response is medically safe."""
-    
+    """
+    Check if response is medically safe using llama-3.1-8b-instant
+    with a structured safety prompt (SAFE/UNSAFE classification).
+    """
     draft = state.get("draft", "")
     question = state.get("question", "")
-    
-    safety_llm = get_llm("alibayram/medgemma:4b", temperature=0.0)
-    
-    prompt = safety_prompt.format(q=question, text=draft)
-    response = safety_llm.invoke(prompt)
-    raw = response.content.upper() if hasattr(response, 'content') else str(response).upper()
-    
-    log("safety", f"Result: {raw}")
-    
-    # Determine safety
-    if "UNSAFE" in raw:
-        state["safety_score"] = 0.3
-        state["draft"] = (
-            "⚠️ I cannot provide a safe medical answer. "
-            "Please consult a qualified healthcare professional."
-        )
-        log("safety", "⚠️ UNSAFE response detected")
-    else:
+
+    try:
+        safety_llm = get_llm("llama-3.1-8b-instant", temperature=0.0)
+        prompt = safety_prompt.format(q=question, text=draft)
+        response = safety_llm.invoke(prompt)
+        raw = response.content.strip().upper() if hasattr(response, "content") else str(response).strip().upper()
+        log("safety", f"Safety result: {raw}")
+
+        if "UNSAFE" in raw:
+            state["safety_score"] = 0.3
+            state["draft"] = (
+                "⚠️ I cannot provide a safe medical answer to this question. "
+                "Please consult a qualified healthcare professional."
+            )
+            log("safety", "⚠️ UNSAFE")
+        else:
+            state["safety_score"] = 0.9
+            log("safety", "✅ SAFE")
+
+    except Exception as e:
+        log("safety", f"⚠️ Safety check failed: {e} — defaulting to SAFE")
         state["safety_score"] = 0.9
-        log("safety", "✅ SAFE")
-    
+
     return state
 
 
@@ -1015,43 +988,15 @@ def should_continue(state: State) -> Literal["tools", "generate", "end"]:
         log("router", "Draft exists → generate")
         return "generate"
     
-    # If Finish, check if we should force web search
+    # If Finish, only force web search if this question itself needs current info
     if "finish" in action_lower:
-        current_question = state["question"]
-        question_lower = current_question.lower()
         used_tools = state.get("used_tools", [])
-        
-        # ✅ PRIMARY CHECK: Is this question temporal?
-        requires_web = needs_current_info(current_question)
-        
-        # ✅ SECONDARY CHECK: Is this a follow-up to a temporal question?
-        if not requires_web and len(messages) > 2:
-            # Check if this is a follow-up using LLM
-            is_follow_up = is_follow_up_question(current_question, messages)
-            
-            if is_follow_up:
-                # Check if previous question used web search
-                previous_used_web = False
-                
-                for msg in messages[-6:]:
-                    if hasattr(msg, 'content') and isinstance(msg.content, str):
-                        msg_content = msg.content.lower()
-                        if any(indicator in msg_content for indicator in [
-                            "search_web_medical", "🌐", "advisory", "outbreak", 
-                            "guideline", "latest", "published"
-                        ]):
-                            previous_used_web = True
-                            break
-                
-                if previous_used_web:
-                    log("router", "Follow-up to temporal question → forcing web")
-                    requires_web = True
-        
-        # ✅ FORCE WEB SEARCH if needed
+        requires_web = needs_current_info(state["question"])
+
         if requires_web and "web" not in used_tools:
             log("router", "Finish detected but web search needed → tools")
             return "tools"
-        
+
         log("router", "Finish accepted → generate")
         return "generate"
     
@@ -1114,13 +1059,17 @@ agentic_rag = build_graph()
 print("=" * 70)
 print("✅ True ReAct Agentic RAG with Visible Reasoning compiled!")
 print("=" * 70)
+print("\nModels:")
+print("  • Reasoning : llama-3.3-70b-versatile  (main ReAct loop)")
+print("  • Classifier: llama-3.1-8b-instant     (temporal + follow-up routing)")
+print("  • Safety    : llama-3.1-8b-instant     (SAFE/UNSAFE classification)")
+print("  • Summarizer: llama-3.1-8b-instant     (conversation history)")
 print("\nFeatures:")
 print("  ✓ Explicit Thought → Action → Observation traces")
-print("  ✓ User can see reasoning process")
-print("  ✓ Automatic tool execution")
-print("  ✓ Two-stage response generation (MedGemma + LLaMA)")
-print("  ✓ Multi-source synthesis with dedicated prompt")
-print("  ✓ Safety checking")
+print("  ✓ LLM-only routing — no hardcoded keyword rules")
+print("  ✓ Automatic tool selection (Pinecone DB + DuckDuckGo web)")
+print("  ✓ Medical scope enforcement — non-medical questions declined")
+print("  ✓ Safety checking on every response")
 print("  ✓ Max 5 reasoning steps")
 print("=" * 70)
 

@@ -5,7 +5,7 @@ Updated to use react_agentic_app.py with conversation history
 
 from flask import Flask, render_template, request, session, jsonify
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_community.chat_models import ChatOllama
+from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 import os
 from werkzeug.serving import WSGIRequestHandler
@@ -24,7 +24,7 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")  # Use env var 
 # ============================================================================
 
 MAX_HISTORY_TURNS = 10  # Keep last 10 conversation turns
-SUMMARIZATION_MODEL = "llama3"
+SUMMARIZATION_MODEL = "llama-3.1-8b-instant"
 ENABLE_REASONING_TRACES = True  # Global default for showing reasoning
 
 
@@ -63,7 +63,7 @@ def summarize_history(full_history, max_turns=MAX_HISTORY_TURNS):
     ])
     
     # Summarize old part
-    llm = ChatOllama(model=SUMMARIZATION_MODEL, temperature=0.3, num_predict=256)
+    llm = ChatGroq(model=SUMMARIZATION_MODEL, temperature=0.3, groq_api_key=os.getenv("GROQ_API_KEY"))
     
     summary_prompt = f"""Summarize this conversation history concisely, preserving key medical topics discussed:
 
@@ -145,65 +145,62 @@ def chat():
         session["history"] = []
         print("🔄 History cleared via command")
         
-        response_html = """
-        <div class="answer-section" style="background: #d4edda; border-left: 4px solid #28a745;">
-            <strong>✅ Conversation Cleared!</strong><br><br>
-            Your chat history has been reset. You can start a fresh conversation now.<br><br>
-            Feel free to ask me any medical questions!
-        </div>
-        """
-        return response_html
+        return jsonify({
+            "type": "command",
+            "command": "reset",
+            "message": "✅ Conversation Cleared!",
+            "details": "Your chat history has been reset. You can start a fresh conversation now. Feel free to ask me any medical questions!"
+        })
     
     # Handle "help" command
     if question_lower in ["help", "commands", "?", "how to use"]:
         print("📖 Help command executed")
         
-        response_html = """
-        <div class="answer-section" style="background: #e7f3ff; border-left: 4px solid #0066cc;">
-            <strong>📚 How to Use Aceso Medical AI</strong><br><br>
-            
-            <strong>Ask Medical Questions:</strong>
-            <ul>
-                <li>"What are symptoms of diabetes?"</li>
-                <li>"Treatment options for hypertension?"</li>
-                <li>"Did WHO release dengue advisories?"</li>
-            </ul>
-            
-            <strong>Commands:</strong>
-            <ul>
-                <li>Type <code>help</code> - Show this help message</li>
-                <li>Type <code>reset</code> - Clear conversation history</li>
-                <li>Type <code>reasoning on/off</code> - Toggle reasoning display</li>
-            </ul>
-            
-            <strong>Features:</strong>
-            <ul>
-                <li>✓ Search medical databases for established facts</li>
-                <li>✓ Search web for current guidelines and advisories</li>
-                <li>✓ Show reasoning process behind answers</li>
-                <li>✓ Cite sources for all information</li>
-            </ul>
-            
-            <div style="background: #fff3cd; padding: 10px; border-radius: 4px; margin-top: 10px;">
-                <strong>⚠️ Disclaimer:</strong> This is for educational purposes only. Always consult healthcare professionals for medical advice.
-            </div>
-        </div>
-        """
-        return response_html
+        return jsonify({
+            "type": "command",
+            "command": "help",
+            "message": "📚 How to Use Aceso Medical AI",
+            "sections": [
+                {
+                    "title": "Ask Medical Questions",
+                    "items": [
+                        "What are symptoms of diabetes?",
+                        "Treatment options for hypertension?",
+                        "Did WHO release dengue advisories?"
+                    ]
+                },
+                {
+                    "title": "Commands",
+                    "items": [
+                        "Type 'help' - Show this help message",
+                        "Type 'reset' - Clear conversation history",
+                        "Type 'reasoning on/off' - Toggle reasoning display"
+                    ]
+                },
+                {
+                    "title": "Features",
+                    "items": [
+                        "✓ Search medical databases for established facts",
+                        "✓ Search web for current guidelines and advisories",
+                        "✓ Show reasoning process behind answers",
+                        "✓ Cite sources for all information"
+                    ]
+                }
+            ],
+            "disclaimer": "⚠️ Disclaimer: This is for educational purposes only. Always consult healthcare professionals for medical advice."
+        })
     
     # Handle reasoning toggle
     if question_lower in ["reasoning on", "reasoning off"]:
         state = "ON" if "on" in question_lower else "OFF"
         print(f"🔧 Reasoning display: {state}")
         
-        response_html = f"""
-        <div class="answer-section" style="background: #fff3cd; border-left: 4px solid #ffc107;">
-            <strong>✅ Reasoning Display: {state}</strong><br><br>
-            The reasoning process will {'now be visible' if state == 'ON' else 'be hidden'} in subsequent responses.<br><br>
-            {'You can see how I think through problems!' if state == 'ON' else 'Responses will be cleaner and faster.'}
-        </div>
-        """
-        return response_html
+        return jsonify({
+            "type": "command",
+            "command": "reasoning_toggle",
+            "message": f"✅ Reasoning Display: {state}",
+            "details": f"The reasoning process will {'now be visible' if state == 'ON' else 'be hidden'} in subsequent responses. {'You can see how I think through problems!' if state == 'ON' else 'Responses will be cleaner and faster.'}"
+        })
     
     # ✅ Not a command - proceed with normal LLM processing
     print(f"🔍 Processing: {question}")
@@ -211,12 +208,8 @@ def chat():
     # Get conversation history
     history = session.get("history", [])
 
-    # Limit history size - keep only last 4 exchanges (8 messages)
-    if len(history) > 8:
-        history = history[-8:]
-        session["history"] = history
-        print(f"📝 Trimmed history to last 8 messages")
-
+    # Let summarize_history handle the logic
+    # If > 20 messages (10 turns), it will summarize old ones and keep recent 10 turns
     message_history = summarize_history(history)
     message_history.append(HumanMessage(content=question))
     
@@ -234,7 +227,8 @@ def chat():
         "used_tools": [],
         "full_observations": [],
         "last_action": {},
-        "forced_web_search": False
+        "forced_web_search": False,
+        "tool_history": []
     }
     
     try:
@@ -245,41 +239,50 @@ def chat():
         answer = result.get("draft") or "⚠️ I couldn't generate a safe answer."
         
         # Separate reasoning from answer
-        reasoning_html, final_answer = clean_reasoning_trace(answer)
+        reasoning_text, final_answer = clean_reasoning_trace(answer)
         
-        # Escape HTML to prevent breaking out of container
-        import html
-        final_answer_safe = html.escape(final_answer).replace('\n', '<br>')
-        reasoning_html_safe = html.escape(reasoning_html).replace('\n', '<br>') if reasoning_html else ""
-        
+        # Parse sources from answer AND strip them from the answer body
+        sources = []
+        answer_body = final_answer
+        if "## 📚 Sources" in final_answer:
+            parts = final_answer.split("## 📚 Sources")
+            # Keep only the answer body (before sources section)
+            answer_body = parts[0].rstrip().rstrip("---").strip()
+            if len(parts) > 1:
+                source_lines = parts[1].strip().split('\n')
+                for line in source_lines:
+                    line = line.strip()
+                    if line and (line.startswith('📖') or line.startswith('🌐')):
+                        sources.append(line)
+
+        # Fixed disclaimer — always shown once at the bottom by the frontend
+        disclaimer = "⚠️ Disclaimer: This information is for educational purposes only. Please consult a qualified healthcare professional for personal medical advice."
+
         # Save to history (truncated for session storage)
         history.append({"role": "user", "content": question[:300]})
-        history.append({"role": "assistant", "content": final_answer[:600]})
+        history.append({"role": "assistant", "content": answer_body[:600]})
+
+        # Trim session storage to prevent excessive bloat (keep last 40 messages = 20 turns)
+        # This allows summarize_history to trigger when history exceeds 20 messages
+        # But prevents unlimited session growth beyond 40 messages
+        if len(history) > 40:
+            history = history[-40:]
+            print(f"📝 Trimmed session storage to last 40 messages")
+
         session["history"] = history
-        
-        # Build response
-        response_html = ""
 
-        if reasoning_html_safe and show_reasoning:
-            response_html += f"""
-            <div class="reasoning-section">
-                <details open>
-                    <summary style="cursor: pointer; font-weight: bold; color: #0066cc; margin-bottom: 10px;">
-                        🔍 Reasoning Process
-                    </summary>
-                    <pre style="margin: 0; padding: 10px; background: #ffffff; border-radius: 4px; overflow-x: auto;">{reasoning_html_safe}</pre>
-                </details>
-            </div>
-            """
-
-        response_html += f"""
-        <div class="answer-section">
-            {final_answer_safe}
-        </div>
-        """
+        # Return clean JSON data (no HTML)
+        response_data = {
+            "answer": answer_body.strip(),
+            "reasoning": reasoning_text.strip() if reasoning_text else "",
+            "sources": sources,
+            "disclaimer": disclaimer,
+            "show_reasoning": show_reasoning,
+            "type": "answer"
+        }
         
-        print(f"✅ Response generated: {len(response_html)} chars")
-        return response_html
+        print(f"✅ Response generated: {len(final_answer)} chars")
+        return jsonify(response_data)
         
     except Exception as e:
         print(f"❌ ERROR: {str(e)}")
@@ -290,39 +293,39 @@ def chat():
         error_str = str(e).lower()
         
         if "timeout" in error_str or "timed out" in error_str:
-            return """
-            <div style="background: #fff8dc; padding: 15px; border-radius: 8px; border-left: 4px solid #ffa500;">
-                <strong>⏱️ Processing Timeout</strong><br><br>
-                Your question is complex and took too long to process.<br><br>
-                <strong>Try these strategies:</strong>
-                <ul>
-                    <li>Break the question into parts</li>
-                    <li>Simplify the question</li>
-                    <li>Type <code>reset</code> to clear history</li>
-                </ul>
-            </div>
-            """
+            return jsonify({
+                "type": "error",
+                "error_type": "timeout",
+                "message": "⏱️ Processing Timeout",
+                "details": "Your question is complex and took too long to process.",
+                "suggestions": [
+                    "Break the question into parts",
+                    "Simplify the question",
+                    "Type 'reset' to clear history"
+                ]
+            })
         
         if "connection" in error_str:
-            return """
-            <div style="background: #ffe6e6; padding: 15px; border-radius: 8px; border-left: 4px solid #ff0000;">
-                <strong>🔌 Connection Error</strong><br><br>
-                Cannot connect to Ollama server.<br><br>
-                <strong>Check:</strong>
-                <ul>
-                    <li>Is Ollama running? (<code>ollama serve</code>)</li>
-                    <li>Is the model downloaded? (<code>ollama pull llama3</code>)</li>
-                </ul>
-            </div>
-            """
+            return jsonify({
+                "type": "error",
+                "error_type": "connection",
+                "message": "🔌 Connection Error",
+                "details": "Cannot connect to Ollama server.",
+                "suggestions": [
+                    "Is GROQ_API_KEY set in your environment?",
+                    "Check your Groq API key at console.groq.com"
+                ]
+            })
         
-        return f"""
-        <div style="background: #f8d7da; padding: 15px; border-radius: 8px; border-left: 4px solid #dc3545;">
-            <strong>⚠️ Error Occurred</strong><br><br>
-            {str(e)[:200]}<br><br>
-            Type <code>reset</code> to clear history or try rephrasing your question.
-        </div>
-        """
+        return jsonify({
+            "type": "error",
+            "error_type": "general",
+            "message": "⚠️ Error Occurred",
+            "details": str(e)[:200],
+            "suggestions": [
+                "Type 'reset' to clear history or try rephrasing your question."
+            ]
+        })
 
 
 @app.route("/history", methods=["GET"])
@@ -368,6 +371,6 @@ if __name__ == '__main__':
     
     app.run(
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8080)),
+        port=int(os.getenv("PORT", 7860)),
         debug=os.getenv("FLASK_DEBUG", "True").lower() == "true"
     )
