@@ -117,7 +117,7 @@ def run_comprehensive_evaluation():
         print(f"Expected Tools: {', '.join(sample['expected_tools'])}")
         print(f"{'-'*80}")
         
-        # Build initial state
+        # Build initial state (must match schema in react_agentic_app.py)
         init_state = {
             "messages": [HumanMessage(content=sample["question"])],
             "question": sample["question"],
@@ -125,9 +125,13 @@ def run_comprehensive_evaluation():
             "step_count": 0,
             "contexts": [],
             "draft": "",
-            "grounded_score": 0.0,
             "safety_score": 0.0,
-            "show_reasoning": True
+            "show_reasoning": True,
+            "used_tools": [],
+            "full_observations": [],
+            "last_action": {},
+            "forced_web_search": False,
+            "tool_history": []
         }
         
         try:
