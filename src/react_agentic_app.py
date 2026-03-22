@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_groq import ChatGroq
 from sentence_transformers import CrossEncoder
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 from dotenv import load_dotenv
 import os
 import re
