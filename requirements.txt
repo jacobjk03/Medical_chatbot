@@ -27,7 +27,8 @@ pinecone-client==5.0.1
 # -----------------------------------------------------------------------------
 # Web Search Tools
 # -----------------------------------------------------------------------------
-duckduckgo-search==6.1.7             # Main search library
+duckduckgo-search==6.1.7
+ddgs==1.0.0
 # Note: 'ddgs' is included in duckduckgo-search, no separate install needed
 
 # -----------------------------------------------------------------------------
