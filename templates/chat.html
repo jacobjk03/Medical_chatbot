@@ -18,7 +18,7 @@
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     
     <!-- Custom CSS -->
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}?v=4"/>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}?v=7"/>
 </head>
 
 <body>
@@ -50,8 +50,8 @@
                                 <button onclick="sendCommand('reset')" class="btn btn-sm btn-outline-light header-btn" title="Clear history">
                                     <i class="fas fa-redo"></i> <span>Reset</span>
                                 </button>
-                                <button class="reasoning-toggle-btn" id="reasoningToggle" onclick="toggleReasoning()">
-                                    <i class="fas fa-brain"></i> 
+                                <button class="reasoning-toggle-btn" id="reasoningToggle">
+                                    <i class="fas fa-brain"></i>
                                     <span id="reasoningStatus">Reasoning ON</span>
                                 </button>
                             </div>
@@ -102,20 +102,18 @@
         let reasoningEnabled = true;
 
         $(document).ready(function() {
-            // Reasoning toggle button handler
+            // Reasoning toggle button handler — only affects reasoning sections, never the outer bubble
             $("#reasoningToggle").on("click", function() {
                 reasoningEnabled = !reasoningEnabled;
-                
+
                 if (reasoningEnabled) {
                     $("#reasoningStatus").text("Reasoning ON");
-                    $(this).removeClass("btn-secondary").addClass("btn-primary");
+                    $(this).css("background", "linear-gradient(135deg, #667eea 0%, #764ba2 100%)");
                     $(".reasoning-section").removeClass("hidden");
-                    $(".msg_cotainer").removeClass("reasoning-hidden");
                 } else {
                     $("#reasoningStatus").text("Reasoning OFF");
-                    $(this).removeClass("btn-primary").addClass("btn-secondary");
+                    $(this).css("background", "linear-gradient(135deg, #6b7280 0%, #4b5563 100%)");
                     $(".reasoning-section").addClass("hidden");
-                    $(".msg_cotainer").addClass("reasoning-hidden");
                 }
             });
 
@@ -142,7 +140,7 @@
                             <span class="msg_time_send">${str_time}</span>
                         </div>
                         <div class="img_cont_msg">
-                            <img src="https://i.ibb.co/d5b84Xw/Untitled-design.png" 
+                            <img src="https://i.ibb.co/d5b84Xw/Untitled-design.png"
                                  class="rounded-circle user_img_msg">
                         </div>
                     </div>
@@ -163,29 +161,30 @@
                     },
                     type: "POST",
                     url: "/get",
-                    timeout: 180000  // ← Change from 60000 to 180000 (3 minutes)
+                    timeout: 180000,
+                    dataType: "json"  // Expect JSON response
                 }).done(function(data) {
                     hideTypingIndicator();
                     
-                    // Parse and format response
-                    const formattedResponse = formatBotResponse(data);
-                    
+                    // Build HTML from JSON response
+                    const formattedResponse = buildResponseFromJSON(data);
+
                     const botHtml = `
-                        <div class="d-flex justify-content-start mb-4">
-                            <div class="img_cont_msg">
-                                <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" 
-                                     class="rounded-circle user_img_msg">
+                        <div class="d-flex justify-content-start align-items-start mb-4">
+                            <div class="img_cont_msg" style="flex-shrink:0;">
+                                <img src="{{ url_for('static', filename='images/bot_avatar.png') }}"
+                                     class="rounded-circle bot_avatar_img">
                             </div>
-                            <div class="msg_cotainer ${reasoningEnabled ? '' : 'reasoning-hidden'}">
-                                ${formattedResponse}
+                            <div class="msg_cotainer">
+                                ${formattedResponse || '<div class="answer-section"><div class="answer-content"><p>No response received.</p></div></div>'}
                                 <span class="msg_time">${str_time}</span>
                             </div>
                         </div>
                     `;
-                    
+
                     $("#messageFormeight").append(botHtml);
                     scrollToBottom();
-                    
+
                     // Make reasoning sections collapsible
                     initializeReasoningCollapse();
                     
@@ -195,8 +194,8 @@
                     const errorHtml = `
                         <div class="d-flex justify-content-start mb-4">
                             <div class="img_cont_msg">
-                                <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" 
-                                     class="rounded-circle user_img_msg">
+                                <img src="{{ url_for('static', filename='images/bot_avatar.png') }}" 
+                                     class="rounded-circle bot_avatar_img">
                             </div>
                             <div class="msg_cotainer error-message">
                                 ⚠️ <strong>Error:</strong> ${textStatus === 'timeout' ? 'Request timed out. Please try a simpler question.' : 'Something went wrong. Please try again.'}
@@ -215,8 +214,8 @@
                 const typingHtml = `
                     <div id="typing" class="d-flex justify-content-start mb-4">
                         <div class="img_cont_msg">
-                            <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png"
-                                 class="rounded-circle user_img_msg">
+                            <img src="{{ url_for('static', filename='images/bot_avatar.png') }}"
+                                 class="rounded-circle bot_avatar_img">
                         </div>
                         <div class="typing-indicator">
                             <span></span><span></span><span></span>
@@ -247,36 +246,126 @@
                 return text.replace(/[&<>"']/g, m => map[m]);
             }
 
-            function formatBotResponse(response) {
-                // Check if response contains reasoning trace
-                if (response.includes("## 🔍 Reasoning Process")) {
-                    const parts = response.split("## 📋 Final Answer");
-                    
-                    if (parts.length === 2) {
-                        const reasoning = parts[0].replace("## 🔍 Reasoning Process", "").trim();
-                        const answer = parts[1].trim();
-                        
-                        // Format reasoning section
-                        const reasoningHtml = `
-                            <div class="reasoning-section ${reasoningEnabled ? '' : 'hidden'}">
-                                <div class="reasoning-header" onclick="toggleReasoning(this)">
-                                    <i class="fas fa-brain"></i> Reasoning Process
-                                    <i class="fas fa-chevron-down toggle-icon"></i>
-                                </div>
-                                <div class="reasoning-content">
-                                    ${formatReasoningTrace(reasoning)}
-                                </div>
+            // ============================================================================
+            // BUILD RESPONSE FROM JSON - Main function to handle all response types
+            // ============================================================================
+            function buildResponseFromJSON(data) {
+                if (!data) return '<div class="error-message">No response received</div>';
+                
+                // Handle different response types
+                switch(data.type) {
+                    case 'answer':
+                        return buildAnswerResponse(data);
+                    case 'command':
+                        return buildCommandResponse(data);
+                    case 'error':
+                        return buildErrorResponse(data);
+                    default:
+                        return buildAnswerResponse(data);
+                }
+            }
+            
+            // Build answer response (main chat responses)
+            function buildAnswerResponse(data) {
+                let html = '';
+                
+                // Add reasoning section if present and enabled
+                if (data.reasoning && data.show_reasoning && reasoningEnabled) {
+                    html += `
+                        <div class="reasoning-section">
+                            <div class="reasoning-header">
+                                <i class="fas fa-brain"></i> Reasoning Process
+                                <i class="fas fa-chevron-down toggle-icon"></i>
                             </div>
-                            <div class="answer-section">
-                                ${formatAnswer(answer)}
+                            <div class="reasoning-content">
+                                ${formatReasoningTrace(data.reasoning)}
                             </div>
-                        `;
-                        return reasoningHtml;
-                    }
+                        </div>
+                    `;
                 }
                 
-                // No reasoning trace, just format answer
-                return formatAnswer(response);
+                // Add answer section
+                html += `<div class="answer-section">${formatAnswer(data.answer)}</div>`;
+                
+                // Add sources if present
+                if (data.sources && data.sources.length > 0) {
+                    html += '<div class="sources-section"><strong>📚 Sources:</strong><ul>';
+                    data.sources.forEach(source => {
+                        // Parse markdown links [Title](URL) → <a href="URL">Title</a>
+                        const linked = source.replace(
+                            /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+                            '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+                        );
+                        html += `<li class="source-item">${linked}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // Add disclaimer only when answer is not itself a safety block
+                const isSafetyBlock = data.answer && data.answer.startsWith("⚠️ I cannot provide");
+                if (data.disclaimer && !isSafetyBlock) {
+                    html += `<div class="disclaimer">${escapeHtml(data.disclaimer)}</div>`;
+                }
+                
+                return html;
+            }
+            
+            // Build command response (reset, help, etc.)
+            function buildCommandResponse(data) {
+                let html = '';
+                
+                // Different styling based on command type
+                let iconClass = 'info';
+                if (data.command === 'reset') iconClass = 'success';
+                else if (data.command === 'help') iconClass = 'info';
+                else if (data.command === 'reasoning_toggle') iconClass = 'warning';
+                
+                html += `<div class="command-response ${iconClass}">`;
+                html += `<strong>${escapeHtml(data.message)}</strong>`;
+                
+                if (data.details) {
+                    html += `<p>${escapeHtml(data.details)}</p>`;
+                }
+                
+                // Handle help command sections
+                if (data.sections) {
+                    data.sections.forEach(section => {
+                        html += `<div class="help-section">`;
+                        html += `<strong>${escapeHtml(section.title)}:</strong><ul>`;
+                        section.items.forEach(item => {
+                            html += `<li>${escapeHtml(item)}</li>`;
+                        });
+                        html += `</ul></div>`;
+                    });
+                }
+                
+                if (data.disclaimer) {
+                    html += `<div class="disclaimer">${escapeHtml(data.disclaimer)}</div>`;
+                }
+                
+                html += '</div>';
+                return html;
+            }
+            
+            // Build error response
+            function buildErrorResponse(data) {
+                let html = `<div class="error-response">`;
+                html += `<strong>${escapeHtml(data.message)}</strong>`;
+                
+                if (data.details) {
+                    html += `<p>${escapeHtml(data.details)}</p>`;
+                }
+                
+                if (data.suggestions && data.suggestions.length > 0) {
+                    html += '<strong>Try these strategies:</strong><ul>';
+                    data.suggestions.forEach(suggestion => {
+                        html += `<li>${escapeHtml(suggestion)}</li>`;
+                    });
+                    html += '</ul>';
+                }
+                
+                html += '</div>';
+                return html;
             }
 
             function formatReasoningTrace(reasoning) {
@@ -287,31 +376,59 @@
                     .replace(/📝 \*\*Input:\*\* /g, '<br><strong>📝 Input:</strong> ')
                     .replace(/👁️ \*\*Observation:\*\* /g, '</div><div class="observation-step"><strong>👁️ Observation:</strong> ')
                     .replace(/\n-{50,}/g, '</div>');
-                
+
+                // Balance any unclosed divs (last thought/observation step is never closed by patterns above)
+                const opens = (formatted.match(/<div/g) || []).length;
+                const closes = (formatted.match(/<\/div>/g) || []).length;
+                formatted += '</div>'.repeat(Math.max(0, opens - closes));
+
                 return `<div class="reasoning-trace">${formatted}</div>`;
             }
 
             function formatAnswer(answer) {
-                // Convert markdown-like formatting to HTML
-                let formatted = answer
-                    // Bold text
-                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                    // Bullet points
-                    .replace(/^[•\-]\s+(.+)$/gm, '<li>$1</li>')
-                    // Wrap lists
-                    .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
-                    // Disclaimer styling
-                    .replace(/(⚠️.*?Disclaimer:.*?)(?=\n\n|$)/s, '<div class="disclaimer">$1</div>')
-                    // References/Sources
-                    .replace(/(References?:)/g, '<strong>$1</strong>')
-                    .replace(/📖\s+(.*?)(?=\n|$)/g, '<div class="source-item">📖 $1</div>')
-                    .replace(/🌐\s+(.*?)(?=\n|$)/g, '<div class="source-item web">🌐 $1</div>')
-                    // Paragraphs
-                    .replace(/\n\n/g, '</p><p>')
-                    // Line breaks
-                    .replace(/\n/g, '<br>');
-                
-                return `<div class="answer-content"><p>${formatted}</p></div>`;
+                if (!answer) return '<div class="answer-content"><p>No response available.</p></div>';
+
+                const raw = String(answer);
+
+                // Split into paragraphs first (double newline = new paragraph)
+                const paragraphs = raw.split(/\n\n+/);
+
+                function processInline(line) {
+                    return line
+                        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                        .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+                            '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+                }
+
+                let html = '';
+                for (const para of paragraphs) {
+                    const trimmed = para.trim();
+                    if (!trimmed) continue;
+
+                    // Heading
+                    if (/^## /.test(trimmed)) {
+                        html += `<h3>${processInline(trimmed.replace(/^## /, ''))}</h3>`;
+                    } else if (/^# /.test(trimmed)) {
+                        html += `<h2>${processInline(trimmed.replace(/^# /, ''))}</h2>`;
+                    // Horizontal rule
+                    } else if (/^---+$/.test(trimmed)) {
+                        html += '<hr>';
+                    // List block (any line starts with - or •)
+                    } else if (/^[\-•]\s+/m.test(trimmed)) {
+                        const items = trimmed.split('\n').map(line => {
+                            const m = line.match(/^[\-•]\s+(.+)$/);
+                            return m ? `<li>${processInline(m[1])}</li>` : `<p>${processInline(line)}</p>`;
+                        }).join('');
+                        html += `<ul>${items}</ul>`;
+                    // Normal paragraph
+                    } else {
+                        const lines = trimmed.split('\n').map(processInline).join('<br>');
+                        html += `<p>${lines}</p>`;
+                    }
+                }
+
+                return `<div class="answer-content">${html || '<p>No response available.</p>'}</div>`;
             }
 
             function initializeReasoningCollapse() {
@@ -323,15 +440,6 @@
                     icon.toggleClass("fa-chevron-down fa-chevron-up");
                 });
             }
-
-            // Global function for reasoning toggle
-            window.toggleReasoning = function(element) {
-                const content = $(element).next(".reasoning-content");
-                const icon = $(element).find(".toggle-icon");
-
-                content.slideToggle(300);
-                icon.toggleClass("fa-chevron-down fa-chevron-up");
-            };
 
             // ✅ ADD THIS NEW FUNCTION HERE
             window.sendCommand = function(command) {
@@ -348,7 +456,7 @@
                             <span class="msg_time_send">${str_time}</span>
                         </div>
                         <div class="img_cont_msg">
-                            <img src="https://i.ibb.co/d5b84Xw/Untitled-design.png" 
+                            <img src="https://i.ibb.co/d5b84Xw/Untitled-design.png"
                                  class="rounded-circle user_img_msg">
                         </div>
                     </div>
@@ -368,18 +476,22 @@
                     },
                     type: "POST",
                     url: "/get",
-                    timeout: 180000
+                    timeout: 180000,
+                    dataType: "json"  // Expect JSON response
                 }).done(function(data) {
                     hideTypingIndicator();
 
+                    // Build HTML from JSON response
+                    const formattedResponse = buildResponseFromJSON(data);
+
                     const botHtml = `
-                        <div class="d-flex justify-content-start mb-4">
-                            <div class="img_cont_msg">
-                                <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" 
-                                     class="rounded-circle user_img_msg">
+                        <div class="d-flex justify-content-start align-items-start mb-4">
+                            <div class="img_cont_msg" style="flex-shrink:0;">
+                                <img src="{{ url_for('static', filename='images/bot_avatar.png') }}"
+                                     class="rounded-circle bot_avatar_img">
                             </div>
-                            <div class="msg_cotainer ${reasoningEnabled ? '' : 'reasoning-hidden'}">
-                                ${data}
+                            <div class="msg_cotainer">
+                                ${formattedResponse || '<div class="answer-section"><div class="answer-content"><p>No response received.</p></div></div>'}
                                 <span class="msg_time">${str_time}</span>
                             </div>
                         </div>
@@ -403,8 +515,8 @@
                     const errorHtml = `
                         <div class="d-flex justify-content-start mb-4">
                             <div class="img_cont_msg">
-                                <img src="https://www.prdistribution.com/spirit/uploads/pressreleases/2019/newsreleases/d83341deb75c4c4f6b113f27b1e42cd8-chatbot-florence-already-helps-thousands-of-patients-to-remember-their-medication.png" 
-                                     class="rounded-circle user_img_msg">
+                                <img src="{{ url_for('static', filename='images/bot_avatar.png') }}" 
+                                     class="rounded-circle bot_avatar_img">
                             </div>
                             <div class="msg_cotainer error-message">
                                 ⚠️ <strong>Error:</strong> ${

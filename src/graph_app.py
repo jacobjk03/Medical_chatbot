@@ -7,7 +7,7 @@ from langchain_community.tools import DuckDuckGoSearchResults
 from ddgs import DDGS
 from src.helper import download_hugging_face_embeddings
 from src.prompt import prompt_template, classify_prompt, chitchat_prompt, safety_prompt, polish_prompt
-from langchain_community.chat_models import ChatOllama
+from langchain_groq import ChatGroq
 from langchain_community.llms import CTransformers
 from sentence_transformers import CrossEncoder
 from dotenv import load_dotenv
@@ -53,10 +53,11 @@ class RAGState(TypedDict):
 def classify(state: RAGState) -> RAGState:
     q = state["question"].strip()
 
-    classify_llm = ChatOllama(
-        model="alibayram/medgemma:4b",   # or :27b if resources allow
-        temperature=0.0,                 # deterministic classification
-        max_tokens=32
+    classify_llm = ChatGroq(
+        model="llama-3.1-8b-instant",
+        temperature=0.0,
+        max_tokens=32,
+        groq_api_key=os.getenv("GROQ_API_KEY")
     )
 
     # Fill prompt
@@ -84,10 +85,11 @@ def classify(state: RAGState) -> RAGState:
 
 def chitchat(state: RAGState) -> RAGState:
     prompt = chitchat_prompt.format(question=state["question"])
-    llm = ChatOllama(
-        model="llama3", 
+    llm = ChatGroq(
+        model="llama-3.1-8b-instant",
         temperature=0.2,
-        num_predict=512
+        max_tokens=512,
+        groq_api_key=os.getenv("GROQ_API_KEY")
     )
     out = llm.invoke(prompt)
 
@@ -172,7 +174,7 @@ def response(state: RAGState) -> RAGState:
     history_text = "\n".join(state.get("history", []))
 
     # Step 1: MedGemma generates draft (grounded, factual)
-    medgemma = ChatOllama(model="alibayram/medgemma:4b", temperature=0.2, max_tokens=512)
+    medgemma = ChatGroq(model="llama-3.1-8b-instant", temperature=0.2, max_tokens=512, groq_api_key=os.getenv("GROQ_API_KEY"))
     draft_out = medgemma.invoke(PROMPT.format(
         history=history_text,
         question=state["question"],
@@ -181,7 +183,7 @@ def response(state: RAGState) -> RAGState:
     draft = draft_out.content.strip() if hasattr(draft_out, "content") else str(draft_out).strip()
 
     # Step 2: LLaMA 3 polishes for user-facing style
-    llama3 = ChatOllama(model="llama3", temperature=0.5, max_tokens=512)
+    llama3 = ChatGroq(model="llama-3.1-8b-instant", temperature=0.5, max_tokens=512, groq_api_key=os.getenv("GROQ_API_KEY"))
     
     polish_out = llama3.invoke(polish_prompt.format(draft=draft))
     text = polish_out.content.strip() if hasattr(polish_out, "content") else str(polish_out).strip()
@@ -229,10 +231,11 @@ def grade(state: RAGState) -> RAGState:
     grounded = 0.9 if has_refs else 0.5  
 
     def safety_check(text: str) -> float:
-        safety_llm = ChatOllama(
-            model="alibayram/medgemma:4b",   # domain-tuned medical model
-            temperature=0.0,                 # deterministic
-            max_tokens=16                    # very short output
+        safety_llm = ChatGroq(
+            model="llama-3.1-8b-instant",
+            temperature=0.0,
+            max_tokens=16,
+            groq_api_key=os.getenv("GROQ_API_KEY")
         )
 
         prompt = safety_prompt.format(q=state["question"],text=text)

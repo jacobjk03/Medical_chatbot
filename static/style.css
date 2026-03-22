@@ -75,6 +75,13 @@ body, html {
     border: 1.5px solid #f5f6fa;
 }
 
+.bot_avatar_img {
+    height: 40px;
+    width: 40px;
+    border: none;
+    object-fit: cover;
+}
+
 .img_cont {
     position: relative;
     height: 70px;
@@ -84,6 +91,7 @@ body, html {
 .img_cont_msg {
     height: 40px;
     width: 40px;
+    flex-shrink: 0;
 }
 
 .online_icon {
@@ -146,21 +154,11 @@ body, html {
     margin-left: 10px;
     margin-right: auto;
     border-bottom-left-radius: 4px;
+    min-width: 220px;
+    height: auto !important;
+    overflow: visible;
 }
 
-/* When reasoning is hidden, make container wider to center answer */
-.msg_cotainer.reasoning-hidden {
-    max-width: 60%;
-    margin-left: auto;
-    margin-right: auto;
-    background: transparent !important;
-    padding: 0 !important;
-    box-shadow: none !important;
-}
-
-.msg_cotainer.reasoning-hidden .msg_time {
-    display: none;
-}
 
 .msg_cotainer_send {
     background: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
@@ -203,11 +201,6 @@ body, html {
 
 .reasoning-section.hidden {
     display: none !important;
-    width: 0 !important;
-    height: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    opacity: 0 !important;
 }
 
 .reasoning-header {
@@ -350,22 +343,22 @@ body, html {
    ======================================================================== */
 
 .answer-section {
+    display: block !important;
     background: #ffffff !important;
     padding: 20px !important;
     border-radius: 12px;
     border: 1px solid #e5e7eb !important;
-    margin-top: 15px;
-    margin-bottom: 20px;
+    margin-top: 12px;
+    margin-bottom: 12px;
     line-height: 1.7;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 20px;
 }
 
-/* Center answer section when reasoning is hidden */
-.msg_cotainer:has(.reasoning-section.hidden) .answer-section,
-.msg_cotainer.reasoning-hidden .answer-section {
-    margin-left: 0;
-    margin-right: 0;
+/* When reasoning is hidden, answer sits at top of bubble with no extra margin */
+.msg_cotainer:has(.reasoning-section.hidden) .answer-section {
     margin-top: 0;
-    width: 100%;
 }
 
 /* ALL TEXT IN ANSWER SECTION MUST BE BLACK */
@@ -651,13 +644,154 @@ body, html {
 
 
 /* ========================================================================
-   ERROR MESSAGES
+   COMMAND RESPONSES
    ======================================================================== */
 
+.command-response {
+    background: #ffffff !important;
+    padding: 20px !important;
+    border-radius: 12px;
+    margin-top: 10px;
+    margin-bottom: 10px;
+    line-height: 1.7;
+}
+
+.command-response,
+.command-response * {
+    color: #000000 !important;
+}
+
+.command-response.success {
+    border-left: 4px solid #10b981 !important;
+    background: #d1fae5 !important;
+}
+
+.command-response.info {
+    border-left: 4px solid #3b82f6 !important;
+    background: #dbeafe !important;
+}
+
+.command-response.warning {
+    border-left: 4px solid #f59e0b !important;
+    background: #fef3c7 !important;
+}
+
+.command-response strong {
+    font-weight: 700;
+    display: block;
+    margin-bottom: 10px;
+    font-size: 1.1em;
+}
+
+.command-response p {
+    margin: 10px 0;
+}
+
+.command-response ul {
+    margin: 10px 0;
+    padding-left: 25px;
+}
+
+.command-response li {
+    margin: 6px 0;
+}
+
+.command-response code {
+    background: rgba(0, 0, 0, 0.05) !important;
+    color: #dc2626 !important;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+}
+
+.help-section {
+    margin: 15px 0;
+}
+
+.help-section strong {
+    color: #1e293b !important;
+}
+
+
+/* ========================================================================
+   ERROR RESPONSES
+   ======================================================================== */
+
+.error-response {
+    background: #fef2f2 !important;
+    border-left: 4px solid #ef4444 !important;
+    padding: 20px !important;
+    border-radius: 12px;
+    margin-top: 10px;
+    margin-bottom: 10px;
+    line-height: 1.7;
+}
+
+.error-response,
+.error-response * {
+    color: #7f1d1d !important;
+}
+
+.error-response strong {
+    font-weight: 700;
+    display: block;
+    margin-bottom: 10px;
+    font-size: 1.1em;
+    color: #991b1b !important;
+}
+
+.error-response p {
+    margin: 10px 0;
+}
+
+.error-response ul {
+    margin: 10px 0;
+    padding-left: 25px;
+}
+
+.error-response li {
+    margin: 6px 0;
+}
+
+/* Legacy error message styling (for backward compatibility) */
 .error-message {
     background: linear-gradient(135deg, rgba(239, 68, 68, 0.8) 0%, rgba(220, 38, 38, 0.8) 100%) !important;
     border-left: 4px solid #dc2626;
     color: #fff !important;
+}
+
+
+/* ========================================================================
+   SOURCES SECTION
+   ======================================================================== */
+
+.sources-section {
+    background: #fefce8 !important;
+    padding: 15px !important;
+    border-radius: 8px;
+    margin-top: 15px !important;
+}
+
+.sources-section,
+.sources-section * {
+    color: #000000 !important;
+}
+
+.sources-section strong {
+    color: #854d0e !important;
+    font-weight: 700;
+    margin-bottom: 10px;
+    display: block;
+}
+
+.sources-section ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.sources-section .source-item {
+    margin: 8px 0 !important;
 }
 
 

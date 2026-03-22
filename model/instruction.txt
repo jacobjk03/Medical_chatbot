@@ -1,19 +1,195 @@
-## 1. RAG pipeline
-## Download the Llama 2 Model:
-llama-2-7b-chat.ggmlv3.q4_0.bin
+================================================================================
+ACESO MEDICAL CHATBOT — ARCHITECTURE HISTORY & MODEL INSTRUCTIONS
+================================================================================
 
-## From the following link:
-https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGML/tree/main
+This file documents the evolution of the chatbot across three major architectural
+versions. Each version is kept for reference. The current active architecture is
+Version 3 (ReAct).
 
-## 2. Agentic AI Pipeline 
-##For Agentic AI (Model Update) 
+================================================================================
+VERSION 1 — Basic RAG Pipeline
+================================================================================
 
-Agentic AI we used Llama 3.1
-Install ollama: https://ollama.com/
-Then run "ollama serve" to start Ollama Service Ollama 
+DESCRIPTION:
+  The original architecture. A simple Retrieval-Augmented Generation (RAG)
+  pipeline — the user's question is embedded, similar chunks are retrieved from
+  Pinecone, and a local LLM generates an answer from those chunks.
+  No reasoning loop, no web search, no safety checks.
 
-## For response, safety check and classification of query- > download:
-https://ollama.com/alibayram/medgemma -> just run ollama pull alibayram/medgemma:4b
-and then run: ollama pull llama3 (For Summary and user-facing style response)
+PIPELINE:
+  User Question
+      │
+      ▼
+  Embed query (HuggingFace all-MiniLM-L6-v2)
+      │
+      ▼
+  Pinecone Vector Search (Gale Encyclopedia of Medicine)
+      │
+      ▼
+  Retrieved chunks → Prompt → Local LLM
+      │
+      ▼
+  Answer
 
-Do either step 1 or 2. Note: If you want to use only RAG pipeline uncomment the code in app.py and comment the agentic pipeline code.
+MODEL:
+  llama-2-7b-chat.ggmlv3.q4_0.bin (local GGUF via CTransformers)
+
+DOWNLOAD:
+  https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGML/tree/main
+  File: llama-2-7b-chat.ggmlv3.q4_0.bin
+
+LIMITATIONS:
+  - No awareness of current events or recent guidelines
+  - No reasoning transparency — black box answer generation
+  - Slow on CPU (local model), required significant hardware
+  - No safety filtering on outputs
+  - Single-turn only, no conversation history
+
+
+================================================================================
+VERSION 2 — Agentic AI Pipeline
+================================================================================
+
+DESCRIPTION:
+  Upgraded to an agentic pipeline using LangGraph with multiple specialised nodes.
+  Introduced query classification (medical vs non-medical), a reranking step,
+  web search capability, and a safety check node. Switched from local GGUF to
+  cloud-served models via Ollama for better speed and quality.
+
+PIPELINE:
+  User Question
+      │
+      ▼
+  Classification Node (MedGemma 4b)
+  — is this a medical question?
+      │
+      ▼
+  Retrieval Node
+  — Pinecone vector search
+  — CrossEncoder reranking (BAAI/bge-reranker-large)
+      │
+      ├── Web Search Node (if current/recent data needed)
+      │
+      ▼
+  Generation Node (Llama 3 via Ollama)
+      │
+      ▼
+  Safety Check Node (MedGemma 4b)
+      │
+      ▼
+  Answer
+
+MODELS:
+  - MedGemma 4b  — query classification + safety checking
+  - Llama 3      — response generation + summarisation
+  Both served locally via Ollama.
+
+SETUP:
+  1. Install Ollama: https://ollama.com/download
+  2. Start the Ollama service:
+       ollama serve
+  3. Pull the models:
+       ollama pull alibayram/medgemma:4b
+       ollama pull llama3
+  4. Run the app:
+       python app.py
+
+IMPROVEMENTS OVER V1:
+  - Medical/non-medical query classification
+  - CrossEncoder reranking for more relevant retrieval
+  - Basic web search for current information
+  - Safety filtering on outputs
+  - Multi-turn conversation with history
+
+LIMITATIONS:
+  - Requires Ollama running locally — not cloud-deployable as-is
+  - MedGemma + Llama3 running simultaneously was RAM-heavy
+  - No explicit reasoning trace shown to user
+  - Web search was not restricted to medical domains
+
+
+================================================================================
+VERSION 3 — ReAct Architecture (CURRENT)
+================================================================================
+
+DESCRIPTION:
+  Full ReAct (Reasoning + Acting) architecture built with LangGraph. The agent
+  explicitly reasons through each step, decides which tool to use, observes the
+  result, and reasons again before finalising the answer. All local models
+  replaced with Groq cloud API — no Ollama required. Web search is now filtered
+  to trusted medical domains. Full reasoning trace is shown to the user and can
+  be toggled on/off.
+
+PIPELINE:
+  User Question
+      │
+      ▼
+  ReAct Agent (LangGraph StateGraph)
+      │
+      ├── Thought: What information do I need?
+      │
+      ├── Action: search_medical_database
+      │     └── Pinecone Vector Store
+      │           + CrossEncoder Reranking (BAAI/bge-reranker-large)
+      │
+      ├── Action: search_web_medical
+      │     └── DuckDuckGo (filtered to WHO, NIH, CDC, PubMed,
+      │                      Mayo Clinic, WebMD, Healthline, etc.)
+      │
+      ├── Thought: Synthesise findings
+      │
+      └── Action: Finish
+            │
+            ▼
+        Safety Check (Groq llama-3.1-8b-instant)
+            │
+            ▼
+        Final Answer + Sources + Reasoning Trace
+
+MODELS (all via Groq cloud API — no local installation needed):
+  - llama-3.3-70b-versatile   — main ReAct reasoning + answer generation
+  - llama-3.1-8b-instant      — safety classifier + history summarisation
+
+EMBEDDINGS & RERANKING (local, CPU):
+  - sentence-transformers/all-MiniLM-L6-v2   — query embedding for Pinecone
+  - BAAI/bge-reranker-large                  — CrossEncoder reranking
+
+SETUP:
+  1. Get API keys:
+       Groq:    https://console.groq.com
+       Pinecone: https://app.pinecone.io
+
+  2. Create a .env file in the project root:
+       GROQ_API_KEY=your_groq_api_key
+       PINECONE_API_KEY=your_pinecone_api_key
+       FLASK_SECRET_KEY=any_random_string
+
+  3. Install dependencies:
+       pip install torch --index-url https://download.pytorch.org/whl/cpu
+       pip install -r requirements.txt
+
+  4. Ingest the knowledge base (first time only):
+       python store_index.py
+
+  5. Run the app:
+       python app.py
+       # or in production:
+       gunicorn -w 1 -b 0.0.0.0:7860 --timeout 180 app:app
+
+DEPLOYMENT:
+  Deployed on Hugging Face Spaces via Docker.
+  GitHub → HF Spaces sync enables auto-deploy on every push to main.
+  Environment variables set as Space secrets (never committed).
+
+IMPROVEMENTS OVER V2:
+  - Fully cloud-based — no local Ollama or GGUF models needed
+  - Explicit Thought/Action/Observation reasoning trace visible to user
+  - Web search restricted to trusted medical domains (WHO, NIH, CDC, etc.)
+  - Conversation history with automatic summarisation for long sessions
+  - Collapsible reasoning panel in the UI
+  - Production-ready: gunicorn, Docker, HF Spaces deployment
+  - Removed eval-only dependencies (bert-score, rouge-score) from prod build
+
+================================================================================
+END OF ARCHITECTURE HISTORY
+================================================================================

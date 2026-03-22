@@ -7,6 +7,7 @@
 # -----------------------------------------------------------------------------
 flask==3.0.3
 python-dotenv==1.0.1
+gunicorn==22.0.0
 
 # -----------------------------------------------------------------------------
 # LangChain Ecosystem (Core ReAct Components)
@@ -16,6 +17,7 @@ langchain-community==0.2.12
 langgraph==0.2.19                    # ReAct graph orchestration
 langchain-pinecone==0.1.3
 langchain-huggingface==0.0.3         # For HuggingFace embeddings
+langchain-groq==0.1.9                # Groq cloud LLM
 
 # -----------------------------------------------------------------------------
 # Vector Database
@@ -32,26 +34,16 @@ duckduckgo-search==6.1.7             # Main search library
 # ML Models & Embeddings
 # -----------------------------------------------------------------------------
 sentence-transformers==3.0.1         # Embeddings + CrossEncoder reranker
-transformers>=4.30.0                 # Required by sentence-transformers & bert-score
-torch>=2.0.0                         # Deep learning backend
-# Note: Install CPU version if no GPU: pip install torch --index-url https://download.pytorch.org/whl/cpu
+transformers>=4.30.0                 # Required by sentence-transformers
+# torch is installed separately in Dockerfile with CPU-only build to keep image size small
 
 # -----------------------------------------------------------------------------
-# Local LLM Support (Optional - if not using Ollama)
+# Local LLM Support (Removed - using Groq cloud API instead)
 # -----------------------------------------------------------------------------
-ctransformers==0.2.27                # For GGML/GGUF models (Llama 2)
-# Note: Not needed if using Ollama for all models
-
-# -----------------------------------------------------------------------------
-# Evaluation Metrics
-# -----------------------------------------------------------------------------
-rouge-score==0.1.2                   # ROUGE metrics
-bert-score==0.3.13                   # BERTScore metrics
 
 # -----------------------------------------------------------------------------
 # Utilities
 # -----------------------------------------------------------------------------
-pypdf==4.2.0                         # PDF processing (if ingesting PDFs)
 numpy>=1.24.0                        # Array operations
 typing-extensions>=4.5.0             # Type hints for older Python
 
@@ -63,8 +55,3 @@ typing-extensions>=4.5.0             # Type hints for older Python
 # flake8==7.0.0                      # Linting
 # jupyter==1.0.0                     # Notebooks for experiments
 
-# -----------------------------------------------------------------------------
-# Project Installation (if you have setup.py or pyproject.toml)
-# -----------------------------------------------------------------------------
--e .
-# ↑ Remove the # above if you have setup.py/pyproject.toml and want editable install
