@@ -12,7 +12,7 @@ app_port: 7860
 
 > An intelligent medical information assistant powered by ReAct (Reasoning + Acting) architecture with real-time web search and vector database retrieval.
 
-**Live Demo:** `<!-- DEPLOYMENT LINK HERE -->`
+**Live Demo:** [https://huggingface.co/spaces/jacob03/medical_chatbot](https://huggingface.co/spaces/jacob03/medical_chatbot)
 
 ---
 
