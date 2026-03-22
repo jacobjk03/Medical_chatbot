@@ -1,13 +1,3 @@
----
-title: Aceso Medical AI
-emoji: 🏥
-colorFrom: blue
-colorTo: purple
-sdk: docker
-pinned: false
-app_port: 7860
----
-
 # Aceso — Medical AI Chatbot
 
 > An intelligent medical information assistant powered by ReAct (Reasoning + Acting) architecture with real-time web search and vector database retrieval.
