@@ -163,4 +163,7 @@ model/llama-2-7b-chat.ggmlv3.q4_0.bin
 model/llama-2-7b-chat.Q4_K_M.gguf
 
 # Auto-generated evaluation result files
-evaluation_results_*.jsondata/
+evaluation_results_*.json
+data/
+static/images/
+.claude/
