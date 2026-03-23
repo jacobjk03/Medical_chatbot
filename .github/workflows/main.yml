@@ -12,9 +12,8 @@ permissions:
   contents: read
 
 jobs:
-#CI- Integration
   integration:
-    name: :Continues Integration
+    name: Continuous Integration
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -26,13 +25,22 @@ jobs:
       - name: Run unit tests
         run: echo "Running unit tests"
 
+  deploy_to_hf:
+    name: Deploy to Hugging Face Spaces
+    needs: integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
 
-#CD- Delivery
-  # push_to_registry:
-  #   name: Push Docker image to Docker hub
-  #   ...
-
-#CD- Deployment
-  # Continuous-Deployment:
-  #   needs: push_to_registry
-  #   ...
+      - name: Push to Hugging Face Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config --global user.email "ci@github.com"
+          git config --global user.name "GitHub Actions"
+          git remote add hf https://jacob03:${HF_TOKEN}@huggingface.co/spaces/jacob03/medical_chatbot
+          git push hf main --force
