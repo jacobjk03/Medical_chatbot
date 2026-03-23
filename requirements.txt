@@ -28,6 +28,7 @@ pinecone-client==5.0.1
 # Web Search Tools
 # -----------------------------------------------------------------------------
 duckduckgo-search==6.1.7
+lxml                                 # Required for html/lite backends in duckduckgo-search
 # Note: 'ddgs' is included in duckduckgo-search, no separate install needed
 
 # -----------------------------------------------------------------------------
