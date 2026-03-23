@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import requests
 import os, re
 import json
+import time
 
 load_dotenv()
 
@@ -287,8 +288,17 @@ def refine_or_finish(state: RAGState) -> RAGState:
 def web_search_tool(state: RAGState) -> RAGState:
     query = state["question"]
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=6))
+        results = []
+        for backend in ("api", "html", "lite"):
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=6, backend=backend))
+                if results:
+                    break
+                time.sleep(1)
+            except Exception:
+                time.sleep(1)
+                continue
         if results:
             # Append web results (keep Pinecone + Web together)
             new_web_docs = [

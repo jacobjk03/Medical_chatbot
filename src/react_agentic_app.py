@@ -15,6 +15,7 @@ from duckduckgo_search import DDGS
 from dotenv import load_dotenv
 import os
 import re
+import time
 
 from src.helper import download_hugging_face_embeddings
 from src.prompt import react_system_prompt, safety_prompt
@@ -154,16 +155,34 @@ def search_web_medical(query: str) -> str:
         # First try with a medical-focused query
         medical_query = f"{query} site:who.int OR site:nih.gov OR site:cdc.gov OR site:pubmed.ncbi.nlm.nih.gov OR site:mayoclinic.org OR site:healthline.com OR site:webmd.com"
 
-        with DDGS() as ddgs:
-            results = list(ddgs.text(medical_query, max_results=6))
+        results = []
+        for backend in ("api", "html", "lite"):
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(medical_query, max_results=6, backend=backend))
+                if results:
+                    break
+                time.sleep(1)
+            except Exception:
+                time.sleep(1)
+                continue
 
         # Fallback: if medical query returns too few results, retry with plain query
         if len(results) < 2:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=8))
+            for backend in ("api", "html", "lite"):
+                try:
+                    with DDGS() as ddgs:
+                        plain_results = list(ddgs.text(query, max_results=8, backend=backend))
+                    if plain_results:
+                        results = plain_results
+                        break
+                    time.sleep(1)
+                except Exception:
+                    time.sleep(1)
+                    continue
 
         if not results:
-            return "No web results found."
+            return "No web results found. Please try rephrasing your question or consult a healthcare professional."
 
         # Sort: preferred medical domains first, then others, exclude non-medical homepages
         preferred = [r for r in results if _is_preferred_medical(r.get("href", ""))]
